@@ -15,7 +15,7 @@ deploy:
     script:
       bash deploy.sh latest
     on:
-      branch: master
+      branch: travis-tests
   - provider: script
     skip_cleanup: true
     script:
