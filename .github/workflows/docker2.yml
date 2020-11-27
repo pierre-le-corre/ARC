@@ -10,18 +10,16 @@ jobs:
       - name: Check out the repo
         uses: actions/checkout@v2
       - name: Push arc-web to Docker Hub
-        uses: docker/build-push-action@v1
+        uses: docker/build-push-action@v2
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
-          repository: lecorrepierre/arc
-          file: ./app.Dockerfile
+          dockerfile: ./app.Dockerfile
           tags: lecorrepierre/arc:latest
       - name: Push arc-ws to Docker Hub
-        uses: docker/build-push-action@v1
+        uses: docker/build-push-action@v2
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
-          repository: lecorrepierre/arc-ws
-          file: ./app-ws.Dockerfile
+          dockerfile: ./app-ws.Dockerfile
           tags: lecorrepierre/arc-ws:latest
