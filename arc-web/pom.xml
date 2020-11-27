@@ -9,6 +9,7 @@
 		<version>0.0.2-SNAPSHOT</version>
 		<relativePath>../pom.xml</relativePath>
 	</parent>
+	
 	<groupId>fr.insee.arc</groupId>
 	<artifactId>arc-web</artifactId>
 	<packaging>war</packaging>
