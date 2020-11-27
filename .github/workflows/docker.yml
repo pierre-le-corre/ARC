@@ -1,0 +1,17 @@
+name: Docker deploy
+
+on:
+  push:
+    branches: [ master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Run deploy.sh
+      run: bash deploy.sh latest
+      env:
+      - $DOCKER_USERNAME: ${{ secrets.$DOCKER_USERNAME }}
+      - $DOCKER_PASSWORD: ${{ secrets.$DOCKER_PASSWORD }}
