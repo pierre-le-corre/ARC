@@ -13,5 +13,5 @@ jobs:
     - name: Run deploy.sh
       run: bash deploy.sh latest
       env:
-        $DOCKER_USERNAME: ${{ secrets.$DOCKER_USERNAME }}
-        $DOCKER_PASSWORD: ${{ secrets.$DOCKER_PASSWORD }}
+        DOCKER_USERNAME: ${{ secrets.$DOCKER_USERNAME }}
+        DOCKER_PASSWORD: ${{ secrets.$DOCKER_PASSWORD }}
