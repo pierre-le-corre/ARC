@@ -30,7 +30,7 @@ jobs:
       - name: Push arc-web to Docker Hub
         uses: docker/build-push-action@v2
         with:
-         push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ github.event_name != 'pull_request' }}
           file: ./app.Dockerfile
           tags: |
             ${{ github.event_name == 'tags' && 'lecorrepierre/arc:${github.ref:10}' || '' }}
