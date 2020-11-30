@@ -1,12 +1,16 @@
 name: ARC CI
 
-on: [push, pull_request, release]
+on:
+  push:
+  pull_request:
+  release:
+    types: [published]
 
 jobs:
   check:
      runs-on: ubuntu-latest
      steps:
-       - run: echo $GITHUB_EVENT_NAME $GITHUB_REF
+       - run: echo $GITHUB_EVENT_NAME $GITHUB_REF $GITHUB_EVENT_RELEASE_TAG_NAME
   build:
     runs-on: ubuntu-latest
     steps:
