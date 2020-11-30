@@ -1,6 +1,6 @@
 name: ARC CI
 
-on: [push, pull_request]
+on: [push, pull_request, release]
 
 jobs:
   build:
@@ -17,10 +17,7 @@ jobs:
     needs: build
     name: Push Docker image to Docker Hub
     runs-on: ubuntu-latest
-    steps:
-      - name: Get infos
-        if: startsWith(github.ref, 'refs/tags/')
-        run: echo ::set-output name=VERSION::${GITHUB_REF/refs\/tags\//}        
+    steps:     
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v1
       - name: Set up Docker Buildx
@@ -33,21 +30,17 @@ jobs:
           password: ${{ secrets.DOCKER_PASSWORD }}
       - name: Push arc-web to Docker Hub
         uses: docker/build-push-action@v2
-        env: 
-          TAG_NAME: ${{ steps.get_infos.outputs.VERSION }}
         with:
           push: ${{ github.event_name != 'pull_request' }}
           file: ./app.Dockerfile
           tags: |
-            ${{ startsWith(github.ref, 'refs/tags/') && 'lecorrepierre/arc:'$TAG_NAME || '' }}
-            ${{ github.ref == 'refs/heads/master' && 'lecorrepierre/arc:latest' || '' }}
+            ${{ github.event_name == 'release' && 'lecorrepierre/arc:github.event.release.tag_name' || '' }}
+            ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'lecorrepierre/arc:latest' || '' }}
       - name: Push arc-ws to Docker Hub
         uses: docker/build-push-action@v2
-        env: 
-          TAG_NAME: ${{ steps.get_infos.outputs.VERSION }}
         with:
           push: ${{ github.event_name != 'pull_request' }}
           file: ./app-ws.Dockerfile
           tags: |
-            ${{ startsWith(github.ref, 'refs/tags/') && 'lecorrepierre/arc:'$TAG_NAME || '' }}
-            ${{ github.ref == 'refs/heads/master' && 'lecorrepierre/arc-ws:latest' || '' }}
+            ${{ github.event_name == 'release' && 'lecorrepierre/arc:github.event.release.tag_name' || '' }}
+            ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'lecorrepierre/arc-ws:latest' || '' }}
