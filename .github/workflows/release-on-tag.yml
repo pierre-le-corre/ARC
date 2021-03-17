@@ -1,4 +1,4 @@
-name: ARC CI
+name: release-on-tag
 
 on:
   push:
