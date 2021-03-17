@@ -44,5 +44,6 @@
 			</div>
 		</div>
 	</form>
+	<footer>${version}</footer>
 </body>
 </html>
