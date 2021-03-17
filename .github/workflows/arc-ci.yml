@@ -2,9 +2,12 @@ name: ARC CI
 
 on:
   push:
-  pull_request:
-  release:
-    types: [published]
+    branches:
+      - never
+  #push:
+  #pull_request:
+  #release:
+    #types: [published]
 
 jobs:
   build:
