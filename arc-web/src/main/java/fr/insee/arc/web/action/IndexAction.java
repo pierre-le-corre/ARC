@@ -9,13 +9,14 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.context.WebApplicationContext;
 
+import fr.insee.arc.core.service.ApiInitialisationService;
 import fr.insee.arc.web.model.NoModel;
 
 @Controller
 @Scope(scopeName = WebApplicationContext.SCOPE_REQUEST, proxyMode = ScopedProxyMode.TARGET_CLASS)
 public class IndexAction extends ArcAction<NoModel> {
 
-    private static final String ACTION_NAME = "Index";
+    public static final String ACTION_NAME = "Index";
     private static final String RESULT_SUCCESS = "jsp/index.jsp";
     
     @RequestMapping({"/", "/index"})
@@ -24,7 +25,8 @@ public class IndexAction extends ArcAction<NoModel> {
 		return generateDisplay(model, RESULT_SUCCESS);
     }
 
-	@RequestMapping("/status")
+    
+    @RequestMapping("/status")
     @ResponseBody
     public String status() {		
 		JSONObject status = new JSONObject();	

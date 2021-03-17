@@ -1,6 +1,5 @@
 package fr.insee.arc.web.util;
 
-import java.io.File;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -8,6 +7,7 @@ import java.util.List;
 
 import org.springframework.web.multipart.MultipartFile;
 
+import fr.insee.arc.utils.dao.PreparedStatementBuilder;
 import fr.insee.arc.utils.structure.GenericBean;
 import fr.insee.arc.utils.utils.ManipString;
 
@@ -19,17 +19,20 @@ public class VObject {
 	/** Nom dans la session */
 	private String sessionName;
 
+	/** Nombre de lignes par page par défaut. */
+	private int defaultPaginationSize;
+
 	/** Nombre de lignes par page */
-	private int paginationSize;
+	private Integer paginationSize;
 
 	/** Requête de génération du tableau */
-	private String mainQuery;
+	private PreparedStatementBuilder mainQuery;
 
-	public String beforeSelectQuery;
+	public PreparedStatementBuilder beforeSelectQuery;
 
-	public String afterUpdateQuery;
+	public PreparedStatementBuilder afterUpdateQuery;
 
-	public String afterInsertQuery;
+	public PreparedStatementBuilder afterInsertQuery;
 
 	/** Table utilisée pour les update/insert/delete */
 	public String table;
@@ -113,7 +116,9 @@ public class VObject {
     public HashMap<String, ArrayList<String>> mapContent() {
         return new GenericBean(getHeadersDLabel(), getHeadersDType(), listContent()).mapContent();
     }
-	
+
+
+    /** Returns the old values for the lines with new content.*/
 	public ArrayList<ArrayList<String>> listContentBeforeUpdate() {
         if (getSavedContent() == null) {
             return new ArrayList<ArrayList<String>>();
@@ -125,8 +130,8 @@ public class VObject {
             int j = 0;
             boolean equals = true;
             while (j < getContent().get(i).d.size() && equals) {
-                equals = getContent().get(i).d.get(j) == null 
-                		|| ManipString.compareStringWithNull(getSavedContent().get(i).d.get(j), getContent().get(i).d.get(j));
+                equals = compareOldAndNew(getContent().get(i).d.get(j), 
+                		getSavedContent().get(i).d.get(j));
                 j++;
             }
             if (!equals) {
@@ -135,6 +140,11 @@ public class VObject {
         }
         return r;
     }
+
+	private boolean compareOldAndNew(String newContentValue, String oldContentValue) {
+		return newContentValue == null 
+				|| ManipString.compareStringWithNull(oldContentValue, newContentValue);
+	}
 
 	public HashMap<String, ArrayList<String>> mapContentBeforeUpdate() {
         return new GenericBean(getHeadersDLabel(), getHeadersDType(), listContentBeforeUpdate()).mapContent();
@@ -146,7 +156,8 @@ public class VObject {
 	    return new GenericBean(getHeadersDLabel(), getHeadersDType(), r).mapContent();
 	}
 
-	public ArrayList<ArrayList<String>> listContentAfterUpdate() {
+    /** Returns the lines with the new content.*/
+    public ArrayList<ArrayList<String>> listContentAfterUpdate() {
     	if (getSavedContent() == null) {
             return new ArrayList<ArrayList<String>>();
         }
@@ -157,8 +168,8 @@ public class VObject {
             int j = 0;
             boolean equals = true;
             while (j < getContent().get(i).d.size() && equals) {
-                equals = getContent().get(i).d.get(j) == null 
-                		|| ManipString.compareStringWithNull(getSavedContent().get(i).d.get(j), getContent().get(i).d.get(j));
+                equals = compareOldAndNew(getContent().get(i).d.get(j), 
+                		getSavedContent().get(i).d.get(j));
                 j++;
             }
             if (!equals) {
@@ -177,6 +188,67 @@ public class VObject {
 	    r.add(listContentAfterUpdate().get(i));
 	    return new GenericBean(getHeadersDLabel(), getHeadersDType(), r).mapContent();
 	}
+
+	/** Returns the content as it would be after the update.*/
+	public ArrayList<ArrayList<String>> listUpdatedContent() {
+		if (getSavedContent() == null) {
+			return new ArrayList<>();
+		}
+		ArrayList<ArrayList<String>> r = new ArrayList<>();
+		for (int i = 0; i < getSavedContent().size(); i++) {
+			r.add(new ArrayList<>());
+			for (int j = 0; j < getSavedContent().get(i).d.size(); j++) {
+				String oldContentValue = getSavedContent().get(i).d.get(j);
+				if (i >= getContent().size() || j >= getContent().get(i).d.size()) {
+					r.get(i).add(oldContentValue);
+				}  else {
+					String newContentValue = getContent().get(i).d.get(j);
+					if (compareOldAndNew(newContentValue, oldContentValue)) {
+						r.get(i).add(oldContentValue);
+					} else {
+						r.get(i).add(newContentValue);
+					}
+				}
+				
+			}
+		}
+		return r;
+	}
+
+    public HashMap<String, ArrayList<String>> mapUpdatedContent() {
+        return new GenericBean(getHeadersDLabel(), getHeadersDType(), listUpdatedContent()).mapContent();
+    }
+    
+    /** Returns the content as it would be after the update, only on the changed lines.*/
+	public ArrayList<ArrayList<String>> listOnlyUpdatedContent() {
+		if (getSavedContent() == null) {
+			return new ArrayList<>();
+		}
+		ArrayList<ArrayList<String>> r = new ArrayList<>();
+		for (int i = 0; i < getContent().size(); i++) {
+			ArrayList<String> line = new ArrayList<>();
+			boolean changed = false;
+			for (int j = 0; j < getContent().get(i).d.size(); j++) {
+				String oldContentValue = getSavedContent().get(i).d.get(j);
+
+				String newContentValue = getContent().get(i).d.get(j);
+				if (compareOldAndNew(newContentValue, oldContentValue)) {
+					line.add(oldContentValue);
+				} else {
+					line.add(newContentValue);
+					changed = true;
+				}				
+			}
+			if (changed) {
+				r.add(line);
+			}
+		}
+		return r;
+	}
+
+    public HashMap<String, ArrayList<String>> mapOnlyUpdatedContent() {
+        return new GenericBean(getHeadersDLabel(), getHeadersDType(), listOnlyUpdatedContent()).mapContent();
+    }
 
 	public ArrayList<ArrayList<String>> listContentSelected() {
 		ArrayList<ArrayList<String>> r = new ArrayList<ArrayList<String>>();
@@ -463,8 +535,16 @@ public class VObject {
 	public void setSessionName(String sessionName) {
 		this.sessionName = sessionName;
 	}
+	
+	public int getDefaultPaginationSize() {
+		return defaultPaginationSize;
+	}
 
-	public int getPaginationSize() {
+	public void setDefaultPaginationSize(int paginationSize) {
+		this.defaultPaginationSize = paginationSize;
+	}
+
+	public Integer getPaginationSize() {
 		return paginationSize;
 	}
 
@@ -472,36 +552,48 @@ public class VObject {
 		this.paginationSize = paginationSize;
 	}
 
-	public String getMainQuery() {
+	public PreparedStatementBuilder getMainQuery() {
 		return mainQuery;
 	}
 
-	public void setMainQuery(String mainQuery) {
+	public void setMainQuery(PreparedStatementBuilder mainQuery) {
 		this.mainQuery = mainQuery;
 	}
 
-	public String getBeforeSelectQuery() {
+	public PreparedStatementBuilder getBeforeSelectQuery() {
 		return beforeSelectQuery;
 	}
 
-	public void setBeforeSelectQuery(String beforeSelectQuery) {
+	public void setBeforeSelectQuery(PreparedStatementBuilder beforeSelectQuery) {
 		this.beforeSelectQuery = beforeSelectQuery;
 	}
 
-	public String getAfterUpdateQuery() {
+	public PreparedStatementBuilder getAfterUpdateQuery() {
 		return afterUpdateQuery;
 	}
 
-	public void setAfterUpdateQuery(String afterUpdateQuery) {
+	public void setAfterUpdateQuery(PreparedStatementBuilder afterUpdateQuery) {
 		this.afterUpdateQuery = afterUpdateQuery;
 	}
 
-	public String getAfterInsertQuery() {
+	public PreparedStatementBuilder getAfterInsertQuery() {
 		return afterInsertQuery;
 	}
 
-	public void setAfterInsertQuery(String afterInsertQuery) {
+	public void setAfterInsertQuery(PreparedStatementBuilder afterInsertQuery) {
 		this.afterInsertQuery = afterInsertQuery;
+	}
+
+	public void setInitialized(boolean isInitialized) {
+		this.isInitialized = isInitialized;
+	}
+
+	public void setScoped(boolean isScoped) {
+		this.isScoped = isScoped;
+	}
+
+	public void setActive(boolean isActive) {
+		this.isActive = isActive;
 	}
 
 	public String getTable() {

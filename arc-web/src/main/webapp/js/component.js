@@ -106,9 +106,9 @@ $(document).on('ready readyAgain',function() {
 		// met une dimension au th sans width des tableaux à largeur fixe
 		$(".fixedHeader th,.light th").each(
 				function() {
-					if ($(this).attr('style')!=null &&  $(this).attr('style').indexOf("width:/**/;")>-1)
+					if ($(this).attr('style')!=null &&  $(this).attr('style').indexOf("width:/**/;") > -1)
 					{
-						$(this).css("width",$(this).text().trim().split(" ")[0].length*9+20);
+						$(this).css("width",$(this).text().trim().split(" ")[0].length + 5 + '%');
 					}
 				}
 		);
@@ -246,7 +246,9 @@ $(document).on('ready readyAgain',function() {
 		$("textarea").filter("[name*='.content']").off('keydown').on('keydown',function(event){updateCells(event,$(this));});
 		$("textarea").filter("[name*='.inputFields']").off('keydown').on('keydown',function(event){addCells(event,$(this));});
 		$("textarea").filter("[name*='.filterFields']").off('keydown').on('keydown',function(event){updateSelect(event,$(this));});
-		$("textarea").filter("[name*='.idPage']").off('keydown').on('keydown',function(event){updateSelect(event,$(this));});
+		$("input").filter("[name*='.idPage']").off('keydown').on('keydown',function(event){updateSelect(event,$(this));});
+		$("input").filter("[name*='.paginationSize']").off('keydown').on('keydown',function(event){updateSelect(event,$(this));});
+		
 
 		jQuery(document).off('keydown').on('keydown',function(evt) {
 			if (evt.keyCode == 27) {

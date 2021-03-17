@@ -37,8 +37,6 @@ public class ApiNormageService extends ApiService {
     public ApiNormageService() {
         super();
     }
-
-    private int currentIndice;
     
     protected String separator = ",";
 
@@ -46,16 +44,13 @@ public class ApiNormageService extends ApiService {
             String... paramBatch) {
         super(aCurrentPhase, anParametersEnvironment, aEnvExecution, aDirectoryRoot, aNbEnr, paramBatch);
         this.setTableNorme(dbEnv(this.getEnvExecution()) + TraitementTableParametre.NORME);
-
-//        this.tableNormageOK = ApiService.globalTableName(this.getEnvExecution(), this.getCurrentPhase(), TraitementEtat.OK.toString());
-//        this.tableNormageKO = ApiService.globalTableName(this.getEnvExecution(), this.getCurrentPhase(), TraitementEtat.KO.toString());
     }
 
     @Override
     public void executer() throws Exception {
-        StaticLoggerDispatcher.info("** executer **", LOGGER);
+        StaticLoggerDispatcher.info("** executer **", LOGGER_APISERVICE);
         
-        this.MAX_PARALLEL_WORKERS = BDParameters.getInt(this.connexion, "ApiNormageService.MAX_PARALLEL_WORKERS",4);
+        this.maxParallelWorkers = BDParameters.getInt(this.connexion, "ApiNormageService.MAX_PARALLEL_WORKERS",4);
         
         long dateDebut = java.lang.System.currentTimeMillis() ;
         
@@ -70,8 +65,8 @@ public class ApiNormageService extends ApiService {
         ArrayList<ThreadNormageService> threadList = new ArrayList<ThreadNormageService>();
         
         // Pool de connexion
-        ArrayList<Connection> connexionList = ApiService.prepareThreads(MAX_PARALLEL_WORKERS, null, this.envExecution);
-        currentIndice = 0;
+        ArrayList<Connection> connexionList = ApiService.prepareThreads(maxParallelWorkers, null, this.envExecution, properties.getDatabaseRestrictedUsername());
+        int currentIndice = 0;
 
         StaticLoggerDispatcher.info("** Generation des threads pour le normage **", logger);
         for (currentIndice = 0; currentIndice < nbFichier; currentIndice++) {
@@ -87,7 +82,7 @@ public class ApiNormageService extends ApiService {
             threadList.add(r);
             r.start();
             
-            waitForThreads2(MAX_PARALLEL_WORKERS, threadList, connexionList);
+            waitForThreads2(maxParallelWorkers, threadList, connexionList);
 
 
         }
@@ -102,12 +97,8 @@ public class ApiNormageService extends ApiService {
         }
 
         long dateFin= java.lang.System.currentTimeMillis() ;
-        StaticLoggerDispatcher.info("Temp normage des "+ nbFichier+" fichiers : " + (int)Math.round((dateFin-dateDebut)/1000F)+" sec", LOGGER);
+        StaticLoggerDispatcher.info("Temp normage des "+ nbFichier+" fichiers : " + (int)Math.round((dateFin-dateDebut)/1000F)+" sec", LOGGER_APISERVICE);
         
     }
-
-
-
-   
 
 }

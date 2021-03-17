@@ -34,8 +34,6 @@ public class ApiFiltrageService extends ApiService implements IConstanteCaracter
     protected String seuilExclusion;
     protected HierarchicalView normeToPeriodiciteToValiditeInfToValiditeSupToRegle;
     
-    private int currentIndice;
-
     public ApiFiltrageService() {
         super();
     }
@@ -60,16 +58,15 @@ public class ApiFiltrageService extends ApiService implements IConstanteCaracter
      */
     public void executer() throws Exception {
         
-        this.MAX_PARALLEL_WORKERS = BDParameters.getInt(this.connexion, "ApiFiltrageService.MAX_PARALLEL_WORKERS",2);
+        this.maxParallelWorkers = BDParameters.getInt(this.connexion, "ApiFiltrageService.MAX_PARALLEL_WORKERS",2);
     	
         this.setTabIdSource(recuperationIdSource(getPreviousPhase()));
         int nbFichier = getTabIdSource().get(ID_SOURCE).size();
         
-        // long dateDebut = java.lang.System.currentTimeMillis() ;
         Connection connextionThread = null;
-        ArrayList<ThreadFiltrageService> threadList = new ArrayList<ThreadFiltrageService>();
-        ArrayList<Connection> connexionList = ApiService.prepareThreads(MAX_PARALLEL_WORKERS, null, this.envExecution);
-        currentIndice = 0;
+        ArrayList<ThreadFiltrageService> threadList = new ArrayList<>();
+        ArrayList<Connection> connexionList = ApiService.prepareThreads(maxParallelWorkers, null, this.envExecution, properties.getDatabaseRestrictedUsername());
+        int currentIndice = 0;
 
         StaticLoggerDispatcher.info("** Generation des threads pour le filtrage **", logger);
         
@@ -85,7 +82,7 @@ public class ApiFiltrageService extends ApiService implements IConstanteCaracter
             ThreadFiltrageService r = new ThreadFiltrageService(connextionThread, currentIndice, this);
             threadList.add(r);
             r.start();
-            waitForThreads2(MAX_PARALLEL_WORKERS, threadList, connexionList);
+            waitForThreads2(maxParallelWorkers, threadList, connexionList);
 
         }
 
@@ -102,6 +99,4 @@ public class ApiFiltrageService extends ApiService implements IConstanteCaracter
 
     }
 
-
-    
 }

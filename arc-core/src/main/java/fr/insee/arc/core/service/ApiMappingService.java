@@ -46,15 +46,13 @@ public class ApiMappingService extends ApiService {
         super();
     }
     
-    private static final String prefixIdentifiantRubrique = "i_";
+    private static final String PREFIX_IDENTIFIANT_RUBRIQUE = "i_";
 
     protected RequeteMappingCalibree requeteSQLCalibree;
 
     protected JeuDeRegleDao jdrDAO;
     protected RegleMappingFactory regleMappingFactory;
     
-    private int currentIndice;
-
     /**
      * Liste des colonnes jamais null par construction dans ARC.<br/>
      * Permet un pseudo test fonctionnel des règles de mapping sur le critère "ma règle renvoie pas null".
@@ -95,18 +93,17 @@ public class ApiMappingService extends ApiService {
     @Override
     public void executer() throws Exception {
     	
-        this.MAX_PARALLEL_WORKERS = BDParameters.getInt(this.connexion, "MappingService.MAX_PARALLEL_WORKERS",4);
+        this.maxParallelWorkers = BDParameters.getInt(this.connexion, "MappingService.MAX_PARALLEL_WORKERS",4);
         
         // récupère le nombre de fichier à traiter
         this.setTabIdSource(recuperationIdSource(getPreviousPhase()));
         
         int nbFichier = getTabIdSource().get(ID_SOURCE).size();
-        long dateDebut =  java.lang.System.currentTimeMillis() ;  
         
         Connection connextionThread = null;
         ArrayList<ThreadMappingService> threadList = new ArrayList<ThreadMappingService>();
-        ArrayList<Connection> connexionList = ApiService.prepareThreads(MAX_PARALLEL_WORKERS, null, this.envExecution);
-        currentIndice = 0;
+        ArrayList<Connection> connexionList = ApiService.prepareThreads(maxParallelWorkers, null, this.envExecution, properties.getDatabaseRestrictedUsername());
+        int currentIndice = 0;
 
         StaticLoggerDispatcher.info("** Generation des threads pour le mapping **", logger);
         for (currentIndice = 0; currentIndice < nbFichier; currentIndice++) {
@@ -121,7 +118,7 @@ public class ApiMappingService extends ApiService {
             ThreadMappingService r = new ThreadMappingService( connextionThread, currentIndice, this);
             threadList.add(r);
             r.start();
-            waitForThreads2(MAX_PARALLEL_WORKERS, threadList, connexionList);
+            waitForThreads2(maxParallelWorkers, threadList, connexionList);
 
 
         }
@@ -133,17 +130,10 @@ public class ApiMappingService extends ApiService {
         for (Connection connection : connexionList) {
             connection.close();
         }
-        
-//        StringBuilder bloc = new StringBuilder();
-//        bloc.append(this.marquageFinal(this.getTablePil(), this.tablePilTemp));
-//        UtilitaireDao.get(poolName).executeBlock(this.connexion, bloc);
-        
-
     }
 
     public static String getPrefixidentifiantrubrique() {
-        return prefixIdentifiantRubrique;
+        return PREFIX_IDENTIFIANT_RUBRIQUE;
     }
-    
 
 }

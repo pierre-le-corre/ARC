@@ -8,6 +8,7 @@ import java.util.regex.Pattern;
 import fr.insee.arc.core.service.ApiService;
 import fr.insee.arc.core.service.engine.mapping.TableMapping;
 import fr.insee.arc.core.service.engine.mapping.VariableMapping;
+import fr.insee.arc.utils.dao.PreparedStatementBuilder;
 import fr.insee.arc.utils.dao.UtilitaireDao;
 
 /**
@@ -56,10 +57,10 @@ public class RegleMappingGlobale extends AbstractRegleMappingSimple {
         /*
          * La requête doit contenir uniquement du SQL, sans "{" ni "}".
          */
-        if (!requete.matches(CodeSQL.regexRegleCodeSQL)) {
+        if (!requete.matches(CodeSQL.regexRegleCodeSQLrubriqueSeparator) || !requete.matches(CodeSQL.regexRegleCodeSQLrubriqueIgnoreIdSeparator)) {
             throw new IllegalStateException("La règle " + this.getExpression() + " contient des noms de tables inexistants.");
         }
-        this.expressionSQL = UtilitaireDao.get(poolName).getString(this.connexion, requete);
+        this.expressionSQL = UtilitaireDao.get(poolName).getString(this.connexion, new PreparedStatementBuilder(requete));
     }
 
     @Override
@@ -78,7 +79,7 @@ public class RegleMappingGlobale extends AbstractRegleMappingSimple {
             end = matcher.end();
         }
         returned.append(intermediaire.substring(end));
-        this.expressionSQL = UtilitaireDao.get(poolName).getString(this.connexion, returned);
+        this.expressionSQL = UtilitaireDao.get(poolName).getString(this.connexion, new PreparedStatementBuilder(returned));
     }
 
     private final static String tokenTable(String nomCourt) {

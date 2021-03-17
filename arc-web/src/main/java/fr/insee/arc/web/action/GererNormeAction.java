@@ -3,11 +3,9 @@ package fr.insee.arc.web.action;
 import java.io.IOException;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import javax.servlet.http.HttpServletResponse;
 
@@ -22,20 +20,15 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.context.WebApplicationContext;
 import org.springframework.web.multipart.MultipartFile;
 
-import fr.insee.arc.core.dao.MappingRegleDao;
 import fr.insee.arc.core.model.BddTable;
 import fr.insee.arc.core.model.IDbConstant;
-import fr.insee.arc.core.model.JeuDeRegle;
-import fr.insee.arc.core.model.RegleControleEntity;
-import fr.insee.arc.core.model.RegleMappingEntity;
-import fr.insee.arc.core.model.TraitementTableParametre;
-import fr.insee.arc.core.service.engine.controle.ControleRegleService;
-import fr.insee.arc.utils.dao.EntityDao;
+import fr.insee.arc.core.service.ApiService;
+import fr.insee.arc.core.service.engine.mapping.ExpressionService;
+import fr.insee.arc.utils.dao.PreparedStatementBuilder;
 import fr.insee.arc.utils.dao.UtilitaireDao;
 import fr.insee.arc.utils.format.Format;
 import fr.insee.arc.utils.utils.FormatSQL;
 import fr.insee.arc.utils.utils.LoggerHelper;
-import fr.insee.arc.utils.utils.ManipString;
 import fr.insee.arc.utils.utils.SQLExecutor;
 import fr.insee.arc.web.dao.GererNormeDao;
 import fr.insee.arc.web.model.NormManagementModel;
@@ -52,9 +45,6 @@ public class GererNormeAction extends ArcAction<NormManagementModel> implements 
 	private static final String SELECTED_RULESET_NAME = "SELECTED_RULESET_NAME";
 
 	private static final Logger LOGGER = LogManager.getLogger(GererNormeAction.class);
-
-	@Autowired
-	private ControleRegleService service;
 	
 	@Autowired
 	private GererNormeDao gererNormeDao;
@@ -82,6 +72,9 @@ public class GererNormeAction extends ArcAction<NormManagementModel> implements 
 
 	// The map to format rules view
 	private VObject viewMapping;
+	
+	// Expression to use in mapping
+	private VObject viewExpression;
 
 	// The on ruleset to copy rules
 	private VObject viewJeuxDeReglesCopie;
@@ -96,6 +89,7 @@ public class GererNormeAction extends ArcAction<NormManagementModel> implements 
 		setViewControle(vObjectService.preInitialize(model.getViewControle()));
 		setViewFiltrage(vObjectService.preInitialize(model.getViewFiltrage()));
 		setViewMapping(vObjectService.preInitialize(model.getViewMapping()));
+		setViewExpression(vObjectService.preInitialize(model.getViewExpression()));
 		setViewJeuxDeReglesCopie(vObjectService.preInitialize(model.getViewJeuxDeReglesCopie()));
 		
 		putVObject(getViewNorme(),
@@ -121,6 +115,9 @@ public class GererNormeAction extends ArcAction<NormManagementModel> implements 
 		//
 		putVObject(getViewMapping(), t -> gererNormeDao.initializeMapping(t, getViewJeuxDeRegles(),
 				getBddTable().getQualifedName(BddTable.ID_TABLE_IHM_MAPPING_REGLE), getScope()));
+		//
+		putVObject(getViewExpression(), t -> gererNormeDao.initializeExpression(t, getViewJeuxDeRegles(),
+				getBddTable().getQualifedName((BddTable.ID_TABLE_IHM_EXPRESSION)), getScope()));
 		//
 		putVObject(getViewJeuxDeReglesCopie(), t -> gererNormeDao.initializeJeuxDeReglesCopie(t, getViewJeuxDeRegles(),
 				getBddTable().getQualifedName(BddTable.ID_TABLE_IHM_RULESETS), getScope()));
@@ -367,21 +364,24 @@ public class GererNormeAction extends ArcAction<NormManagementModel> implements 
 	public String downloadJeuxDeRegles(Model model, HttpServletResponse response) {
 		Map<String, ArrayList<String>> selection = viewRulesSet.mapContentSelected();
 		if (!selection.isEmpty()) {
-			StringBuilder requeteRegleChargement = new StringBuilder();
+			PreparedStatementBuilder requeteRegleChargement = new PreparedStatementBuilder();
 			requeteRegleChargement.append(gererNormeDao.recupRegle(this.viewRulesSet,
 					getBddTable().getQualifedName(BddTable.ID_TABLE_IHM_CHARGEMENT_REGLE)));
-			StringBuilder requeteRegleNormage = new StringBuilder();
+			PreparedStatementBuilder requeteRegleNormage = new PreparedStatementBuilder();
 			requeteRegleNormage.append(gererNormeDao.recupRegle(this.viewRulesSet,
 					getBddTable().getQualifedName(BddTable.ID_TABLE_IHM_NORMAGE_REGLE)));
-			StringBuilder requeteRegleControle = new StringBuilder();
+			PreparedStatementBuilder requeteRegleControle = new PreparedStatementBuilder();
 			requeteRegleControle.append(gererNormeDao.recupRegle(this.viewRulesSet,
 					getBddTable().getQualifedName(BddTable.ID_TABLE_IHM_CONTROLE_REGLE)));
-			StringBuilder requeteRegleMapping = new StringBuilder();
+			PreparedStatementBuilder requeteRegleMapping = new PreparedStatementBuilder();
 			requeteRegleMapping.append(gererNormeDao.recupRegle(this.viewRulesSet,
 					getBddTable().getQualifedName(BddTable.ID_TABLE_IHM_MAPPING_REGLE)));
-			StringBuilder requeteRegleFiltrage = new StringBuilder();
+			PreparedStatementBuilder requeteRegleFiltrage = new PreparedStatementBuilder();
 			requeteRegleFiltrage.append(gererNormeDao.recupRegle(this.viewRulesSet,
 					getBddTable().getQualifedName(BddTable.ID_TABLE_IHM_FILTRAGE_REGLE)));
+			PreparedStatementBuilder requeteRegleExpression = new PreparedStatementBuilder();
+			requeteRegleExpression.append(gererNormeDao.recupRegle(this.viewRulesSet,
+					getBddTable().getQualifedName(BddTable.ID_TABLE_IHM_EXPRESSION)));
 
 			ArrayList<String> fileNames = new ArrayList<>();
 			fileNames.add("Rules_load");
@@ -389,12 +389,19 @@ public class GererNormeAction extends ArcAction<NormManagementModel> implements 
 			fileNames.add("Rules_control");
 			fileNames.add("Rules_mapping");
 			fileNames.add("Rules_filter");
-			this.vObjectService.download(viewRulesSet, response, fileNames//
-					, requeteRegleChargement.toString()//
-					, requeteRegleNormage.toString()//
-					, requeteRegleControle.toString()//
-					, requeteRegleMapping.toString()//
-					, requeteRegleFiltrage.toString());
+			fileNames.add("Rules_expression");
+			this.vObjectService.download(viewRulesSet, response, fileNames
+					, new ArrayList<>(
+							Arrays.asList(
+									requeteRegleChargement
+									, requeteRegleNormage
+									, requeteRegleControle
+									, requeteRegleMapping
+									, requeteRegleFiltrage
+									, requeteRegleExpression
+									)
+							)
+					);
 			return "none";
 		} else {
 			this.viewRulesSet.setMessage("You didn't select anything");
@@ -560,48 +567,7 @@ public class GererNormeAction extends ArcAction<NormManagementModel> implements 
 	@SQLExecutor
 	@RequestMapping("/addControle")
 	public String addControle(Model model) {
-		
-		loggerDispatcher.info(String.format("Add rule : %s ", this.viewControle.getInputFields().toString()), LOGGER);
-		boolean isToInsert = true;
-		Map<String, ArrayList<String>> selection = viewRulesSet.mapContentSelected();
-		/*
-		 * Fabrication d'un JeuDeRegle pour conserver les informations sur norme et
-		 * calendrier
-		 */
-		JeuDeRegle jdr = new JeuDeRegle();
-        jdr.setIdNorme(selection.get("id_norme").get(0));
-        jdr.setPeriodicite(selection.get("periodicite").get(0));
-        jdr.setValiditeInfString(selection.get("validite_inf").get(0), "yyyy-MM-dd");
-        jdr.setValiditeSupString(selection.get("validite_sup").get(0), "yyyy-MM-dd");
-        jdr.setVersion(selection.get("version").get(0));
-        
-		/* Fabrication de la règle à ajouter */
-		ArrayList<RegleControleEntity> listRegle = new ArrayList<>();
-		RegleControleEntity reg = new RegleControleEntity(viewControle.mapInputFields());
-		listRegle.add(reg);
-		try {
-			// Fabrication de la table temporaire pour tester l'insertion
-
-			UtilitaireDao.get("arc").executeRequest(null,
-					gererNormeDao.createTableTempTest(TraitementTableParametre.CONTROLE_REGLE.toString()));
-			// Insertion de cette règle dans la table temporaire
-			isToInsert = this.service.ajouterRegles(jdr, "arc", listRegle);
-		} catch (Exception e) {
-			this.viewControle.setMessage(e.toString());
-			loggerDispatcher.error(String.format("Error in addControle : %s", e.toString()), LOGGER);
-			isToInsert = false;
-		}
-		// if rule to insert
-		if (isToInsert) {
-			// Insert the rule
-			if (this.vObjectService.insert(viewControle)) {
-				// if no exception
-				loggerDispatcher.info("New rule inserted", LOGGER);
-				this.viewControle.setMessage("New rule inserted");
-
-			}
-		}
-		return generateDisplay(model, RESULT_SUCCESS);
+		return addLineVobject(model, RESULT_SUCCESS, this.viewControle);
 	}
 
 	/**
@@ -613,15 +579,7 @@ public class GererNormeAction extends ArcAction<NormManagementModel> implements 
 	@RequestMapping("/deleteControle")
 	@SQLExecutor
 	public String deleteControle(Model model) {
-		
-		try {
-			this.vObjectService.delete(viewControle);
-		} catch (Exception e) {
-			// else => error message
-			this.viewControle.setMessage("Delete a rule from the rule set make it incoherent : " + e.getMessage());
-			loggerDispatcher.error(String.format("Error in deleteControle : %s", e.toString()), LOGGER);
-		}
-		return generateDisplay(model, RESULT_SUCCESS);
+		return deleteLineVobject(model, RESULT_SUCCESS, this.viewControle);
 	}
 
 	/**
@@ -634,33 +592,7 @@ public class GererNormeAction extends ArcAction<NormManagementModel> implements 
 	@RequestMapping("/updateControle")
 	@SQLExecutor
 	public String updateControle(Model model) {
-		
-
-		JeuDeRegle jdr = gererNormeDao.fetchJeuDeRegle(this.viewRulesSet);
-		loggerDispatcher.info("Mes nouvelles données : " + viewControle.listContentAfterUpdate().toString(),
-				LOGGER);
-		ArrayList<RegleControleEntity> listRegleNouv = new ArrayList<>();
-		for (int i = 0; i < viewControle.listContentAfterUpdate().size(); i++) {
-			RegleControleEntity reg = new RegleControleEntity(viewControle.mapContentAfterUpdate(i));
-			listRegleNouv.add(reg);
-		}
-		try {
-			// Fabrication de la table temporaire pour tester la modifcation
-			UtilitaireDao.get("arc").executeRequest(null,
-					gererNormeDao.createTableTempTest(TraitementTableParametre.CONTROLE_REGLE.toString()));
-			// suppression des lignes modifiées
-			this.vObjectService.deleteForUpdate(viewControle, "arc.test_ihm_" + TraitementTableParametre.CONTROLE_REGLE.toString());
-			// test du nouveau paquet en passant par la méthode ajouterRegles()
-			// afin de lancer la batterie de test (borne_inf<borne_sup etc.)
-			this.service.ajouterRegles(jdr, "arc", listRegleNouv);
-			this.viewControle.setMessage("Rules updated !");
-			this.vObjectService.update(viewControle);
-		} catch (Exception e) {
-			this.viewControle.setMessage("Updating the rule set make it incoherent : " + e.toString());
-			loggerDispatcher.error(String.format("Error in updateControle : %s", e.toString()), LOGGER);
-		}
-
-		return generateDisplay(model, RESULT_SUCCESS);
+		return updateVobject(model, RESULT_SUCCESS, this.viewControle);
 	}
 
 	/**
@@ -682,58 +614,7 @@ public class GererNormeAction extends ArcAction<NormManagementModel> implements 
 	@RequestMapping("/importControle")
 	@SQLExecutor
 	public String importControle(Model model, MultipartFile fileUploadControle) {
-		
-		loggerDispatcher.info("importControle", LOGGER);
-		String fichierRegle = "";
-		if (fileUploadControle == null || fileUploadControle.isEmpty()) {
-			this.viewControle.setMessage("You should choose a file first");
-		} else {
-
-			try {
-				fichierRegle = new String(fileUploadControle.getBytes());
-			} catch (IOException e) {
-				loggerDispatcher.error(String.format("Error with the file in importControle : %s", e.toString()),
-						LOGGER);
-			}
-			loggerDispatcher.info(String.format("I have a file %s character long", fichierRegle.length()), LOGGER);
-			boolean isAjouter = true;
-			Map<String, ArrayList<String>> selection = viewRulesSet.mapContentSelected();
-			/*
-			 * Create a RuleSet to keep informations about the norm and calendar
-			 */
-			JeuDeRegle jdr = new JeuDeRegle();
-	        jdr.setIdNorme(selection.get("id_norme").get(0));
-	        jdr.setPeriodicite(selection.get("periodicite").get(0));
-	        jdr.setValiditeInfString(selection.get("validite_inf").get(0), "yyyy-MM-dd");
-	        jdr.setValiditeSupString(selection.get("validite_sup").get(0), "yyyy-MM-dd");
-	        jdr.setVersion(selection.get("version").get(0));
-	        
-			ArrayList<RegleControleEntity> listRegle = this.service
-					.miseEnRegleC(ControleRegleService.nomTableRegleControle("arc.test_ihm", true), fichierRegle);
-			try {
-				// Create a temporary table to test the importing
-				UtilitaireDao.get("arc").executeRequest(null,
-						gererNormeDao.createTableTempTest(TraitementTableParametre.CONTROLE_REGLE.toString()));
-				// Insert the rules in the temporary table
-				isAjouter = this.service.ajouterRegles(jdr, "arc", listRegle);
-			} catch (Exception e) {
-				this.viewControle.setMessage(e.toString());
-				loggerDispatcher.error("Error when importing controle rules " + e.toString(), LOGGER);
-				isAjouter = false;
-			}
-			// Import result
-			if (isAjouter) {
-				try {
-					// Add the rule in database
-					this.service.ajouterReglesValidees(jdr, "arc", listRegle);
-				} catch (Exception e) {
-					loggerDispatcher.error("Error when importing valid controle rules " + e.toString(), LOGGER);
-
-				}
-				loggerDispatcher.info("New rules inserted", LOGGER);
-				this.viewControle.setMessage("New rules inserted");
-			}
-		}
+		gererNormeDao.uploadFileRule(getViewControle(), viewRulesSet, fileUploadControle);
 		return generateDisplay(model, RESULT_SUCCESS);
 	}
 
@@ -803,7 +684,32 @@ public class GererNormeAction extends ArcAction<NormManagementModel> implements 
 		return generateDisplay(model, RESULT_SUCCESS);
 
 	}
+	
+	/**
+	 * Clean the expressions. Update GUI and database
+	 * 
+	 * @return
+	 */
+	@RequestMapping("/viderExpression")
+	public String viderExpression(Model model) {
+		
+		gererNormeDao.emptyRuleTable(this.viewRulesSet,
+				getBddTable().getQualifedName(BddTable.ID_TABLE_IHM_EXPRESSION));
+		return generateDisplay(model, RESULT_SUCCESS);
 
+	}
+
+	/**
+	 * Action trigger when the table of map rules is request or refresh. Update the
+	 * GUI
+	 * 
+	 * @return success
+	 */
+	@RequestMapping("/selectFiltrage")
+	public String selectFiltrage(Model model) {
+		return basicAction(model, RESULT_SUCCESS);
+	}
+	
 	/**
 	 * Action trigger by updating a filter rule in the GUI. Update the GUI and the
 	 * database. Before inserting, the rules are checked
@@ -813,36 +719,22 @@ public class GererNormeAction extends ArcAction<NormManagementModel> implements 
 	@RequestMapping("/updateFiltrage")
 	@SQLExecutor
 	public String updateFiltrage(Model model) {
-		
-		boolean isRegleOk = true;
-        loggerDispatcher.info("Contenu de l'update : " + viewFiltrage.listContentAfterUpdate(), LOGGER);
-        String exprRegleFiltre = viewFiltrage.listContentAfterUpdate().get(0).get(6);
-
-		StringBuilder message = new StringBuilder();
-		try {
-			// Create test table
-			UtilitaireDao.get("arc").executeRequest(null, gererNormeDao.createTableTest("arc.test_ihm_controle_ok",
-					ManipString.extractRubriques(exprRegleFiltre)));
-
-			UtilitaireDao.get("arc").executeRequest(null,
-					"SELECT * FROM arc.test_ihm_controle_ok WHERE " + ManipString.extractAllRubrique(exprRegleFiltre));
-			loggerDispatcher.info("La requete de test ? " + "SELECT * FROM arc.test_ihm_controle_ok WHERE "
-					+ ManipString.extractAllRubrique(exprRegleFiltre), LOGGER);
-			message.append("Rules updated!");
-		} catch (Exception ex) {
-			isRegleOk = false;
-			message.append("Error when inserting the new rules : " + ex.getMessage());
-			loggerDispatcher.error("Error when inserting the new rules : " + ex.getMessage(), LOGGER);
-		}
-
-		this.viewFiltrage.setMessage(message.toString());
-		if (isRegleOk) {
-			this.vObjectService.update(viewFiltrage);
-		}
-		return generateDisplay(model, RESULT_SUCCESS);
-
+		return updateVobject(model, RESULT_SUCCESS, this.viewFiltrage);
 	}
 
+	
+	/**
+	 * Action trigger by deleting a structurize rule in the GUI. Update the GUI and
+	 * the database
+	 * 
+	 * @return
+	 */
+	@RequestMapping("/deleteFiltrage")
+	public String deleteFiltrage(Model model) {
+		return deleteLineVobject(model, RESULT_SUCCESS, this.viewFiltrage);
+	}
+
+	
 	/**
 	 * Action trigger when the table of map rules is request or refresh. Update the
 	 * GUI
@@ -878,17 +770,43 @@ public class GererNormeAction extends ArcAction<NormManagementModel> implements 
 	 */
 	@RequestMapping("/updateMapping")
 	public String updateMapping(Model model) {
-		Map<String, ArrayList<String>> afterUpdate = viewMapping.mapContentAfterUpdate();
-		//		boolean isRegleOk = GererNormeDao.testerReglesMapping(this.viewMapping, this.viewRulesSet, this.viewNorme,
-//		afterUpdate);
-		boolean isRegleOk=true;
-		if (isRegleOk) {
-			this.vObjectService.update(viewMapping);
-		}
-		LOGGER.info("Rules updated");
-		return generateDisplay(model, RESULT_SUCCESS);
+		return updateVobject(model, RESULT_SUCCESS, this.viewMapping);
 	}
 
+	@RequestMapping("/selectExpression")
+	public String selectExpression(Model model) {
+		return basicAction(model, RESULT_SUCCESS);
+	}
+	
+	@RequestMapping("/addExpression")
+	public String addExpression(Model model) {
+		String exprNameHeader = ExpressionService.EXPR_NAME;
+		viewExpression.setInputFieldFor(exprNameHeader, viewExpression.getInputFieldFor(exprNameHeader).trim());
+		return addLineVobject(model, RESULT_SUCCESS, this.viewExpression);
+	}
+
+	@RequestMapping("/updateExpression")
+	public String updateExpression(Model model) {
+		return updateVobject(model, RESULT_SUCCESS, this.viewExpression);
+	}
+
+	@RequestMapping("/sortExpression")
+	public String sortExpression(Model model) {
+		return sortVobject(model, RESULT_SUCCESS, this.viewExpression);
+	}
+	
+	@RequestMapping("/deleteExpression")
+	public String deleteExpression(Model model) {
+		return deleteLineVobject(model, RESULT_SUCCESS, this.viewExpression);
+	}
+	
+	@RequestMapping("/importExpression")
+	@SQLExecutor
+	public String importExpression(Model model, MultipartFile fileUploadExpression) {
+		gererNormeDao.uploadFileRule(getViewExpression(), viewRulesSet, fileUploadExpression);
+		return generateDisplay(model, RESULT_SUCCESS);
+	}
+	
 	/**
 	 * Action trigger by uploading a filter rule file
 	 * 
@@ -911,16 +829,20 @@ public class GererNormeAction extends ArcAction<NormManagementModel> implements 
 		try {
 			Map<String, ArrayList<String>> selection = viewRulesSet.mapContentSelected();
 
-			 UtilitaireDao.get("arc").executeRequest(null, new StringBuilder("INSERT INTO " + this.viewFiltrage.getTable())//
-	                    .append("  " + Format.stringListe(this.viewFiltrage.getHeadersDLabel()))//
-	                    .append("  SELECT (SELECT coalesce(max(id_regle),1) FROM " + this.viewFiltrage.getTable() + ")+row_number() over () ,")//
-	                    .append("  '" + selection.get("id_norme").get(0) + "', ")//
-	                    .append("  '" + selection.get("validite_inf").get(0) + "', ")//
-	                    .append("  '" + selection.get("validite_sup").get(0) + "', ")//
-	                    .append("  '" + selection.get("version").get(0) + "', ")//
-	                    .append("  '" + selection.get("periodicite").get(0) + "', ")//
-	                    .append("  null,")//
-	                    .append("  null;"));
+			 PreparedStatementBuilder requete= new PreparedStatementBuilder();
+			 requete.append("INSERT INTO " + this.viewFiltrage.getTable())
+             .append("  " + Format.stringListe(this.viewFiltrage.getHeadersDLabel()))
+             .append("  SELECT (SELECT coalesce(max(id_regle),1) FROM " + this.viewFiltrage.getTable() + ")+row_number() over () ,")
+             .append("  " + requete.quoteText(selection.get("id_norme").get(0)) + ", ")
+             .append("  " + requete.quoteText(selection.get("validite_inf").get(0)) + "::date, ")
+             .append("  " + requete.quoteText(selection.get("validite_sup").get(0)) + "::date, ")
+             .append("  " + requete.quoteText(selection.get("version").get(0)) + ", ")
+             .append("  " + requete.quoteText(selection.get("periodicite").get(0)) + ", ")
+             .append("  null,")//
+             .append("  null;");
+			
+			
+			 UtilitaireDao.get("arc").executeRequest(null,requete);
 		} catch (SQLException e) {
 			loggerDispatcher.error(String.format("Error in preGenererRegleFiltrage : %s", e.toString()), LOGGER);
 		}
@@ -934,70 +856,7 @@ public class GererNormeAction extends ArcAction<NormManagementModel> implements 
 	 */
 	@RequestMapping("/importMapping")
 	public String importMapping(Model model, MultipartFile fileUploadMap) {
-		
-		if (fileUploadMap == null || fileUploadMap.isEmpty()) {
-			this.viewMapping.setMessage("You should choose a file first");
-		} else {
-			boolean isRegleOk = false;
-			try {
-				Map<String, String> mapVariableToType = new HashMap<>();
-				Map<String, String> mapVariableToTypeConso = new HashMap<>();
-				gererNormeDao.calculerVariableToType(this.viewNorme, mapVariableToType, mapVariableToTypeConso);
-				Set<String> variablesAttendues = mapVariableToType.keySet();
-				String nomTable = "arc.ihm_mapping_regle";
-				List<RegleMappingEntity> listeRegle = new ArrayList<>();
-				EntityDao<RegleMappingEntity> dao = new MappingRegleDao();
-				dao.setTableName(nomTable);
-				dao.setEOLSeparator(true);
-				Map<String, ArrayList<String>> reglesAImporter = gererNormeDao.calculerReglesAImporter(
-						fileUploadMap, listeRegle, dao, mapVariableToType, mapVariableToTypeConso);
-				Set<String> variablesSoumises = new HashSet<>();
-				for (int i = 0; i < listeRegle.size(); i++) {
-					variablesSoumises.add(Format.toLowerCase(listeRegle.get(i).getVariableSortie()));
-				}
-				Set<String> variablesAttenduesTemp = new HashSet<>(variablesAttendues);
-				variablesAttenduesTemp.removeAll(variablesSoumises);
-				if (!variablesAttenduesTemp.isEmpty()) {
-					throw new IllegalStateException(
-							"Variables " + variablesAttenduesTemp + " do not have format rules.");
-				}
-				variablesSoumises.removeAll(variablesAttendues);
-				if (!variablesSoumises.isEmpty()) {
-					throw new IllegalStateException("Variables " + variablesSoumises + " are not in the model.");
-				}
-//				isRegleOk = gererNormeDao.testerReglesMapping(this.viewMapping, this.viewRulesSet, this.viewNorme,
-//						reglesAImporter);
-				
-				// TODO : mapping
-				isRegleOk=true;
-				
-				Map<String, ArrayList<String>> selection = viewRulesSet.mapContentSelected();
-				Map<String, String> map = new HashMap<String, String>();
-                map.put("id_regle", "(SELECT max(id_regle)+1 FROM " + nomTable + ")");
-                map.put("id_norme", viewNorme.mapContentSelected().get("id_norme").get(0));
-                map.put("validite_inf", selection.get("validite_inf").get(0));
-                map.put("validite_sup", selection.get("validite_sup").get(0));
-                map.put("version", selection.get("version").get(0));
-                map.put("periodicite", selection.get("periodicite").get(0));
-                
-				if (isRegleOk) {
-					// check if each varialbe have a rule
-					JeuDeRegle jdr = gererNormeDao.fetchJeuDeRegle(this.viewRulesSet);
-					StringBuilder bloc = new StringBuilder();
-					/*
-					 * DELETE from
-					 */
-					bloc.append("DELETE FROM " + nomTable + " WHERE " + jdr.getSqlEquals() + ";");
-					for (int i = 0; i < listeRegle.size(); i++) {
-						bloc.append(dao.getInsert(listeRegle.get(i), map));
-					}
-					UtilitaireDao.get(poolName).executeBlock(null, bloc);
-				}
-			} catch (Exception ex) {
-				LoggerHelper.error(LOGGER, "importMapping()", ex.getStackTrace());
-				this.viewMapping.setMessage("Erreur lors de l'import : " + ex.toString());
-			}
-		}
+		gererNormeDao.uploadFileRule(getViewMapping(), viewRulesSet, fileUploadMap);
 		return generateDisplay(model, RESULT_SUCCESS);
 	}
 
@@ -1013,29 +872,22 @@ public class GererNormeAction extends ArcAction<NormManagementModel> implements 
 		try {
 
 			// List hard coded to be sure of the order in the select
-			StringBuilder requete = new StringBuilder("INSERT INTO " + this.viewMapping.getTable()).append(
-					"  (id_regle, id_norme, validite_inf, validite_sup,  version , periodicite, variable_sortie, expr_regle_col, commentaire) ")
-					.append("  SELECT coalesce((SELECT max(id_regle) FROM " + this.viewMapping.getTable()
-							+ "),0)+row_number() over () ,")
-					.append("  '" + viewRulesSet.mapContentSelected().get(ConstanteBD.ID_NORME.getValue()).get(0)
-							+ "', ")
-					.append("  '"
-							+ viewRulesSet.mapContentSelected().get(ConstanteBD.VALIDITE_INF.getValue()).get(0)
-							+ "', ")
-					.append("  '"
-							+ viewRulesSet.mapContentSelected().get(ConstanteBD.VALIDITE_SUP.getValue()).get(0)
-							+ "', ")
-					.append("  '" + viewRulesSet.mapContentSelected().get(ConstanteBD.VERSION.getValue()).get(0)
-							+ "', ")
-					.append("  '"
-							+ viewRulesSet.mapContentSelected().get(ConstanteBD.PERIODICITE.getValue()).get(0)
-							+ "', ")
+			PreparedStatementBuilder requete = new PreparedStatementBuilder();
+				requete.append("INSERT INTO " + this.viewMapping.getTable())
+					.append("  (id_regle, id_norme, validite_inf, validite_sup,  version , periodicite, variable_sortie, expr_regle_col, commentaire) ")
+					.append("  SELECT coalesce((SELECT max(id_regle) FROM " + this.viewMapping.getTable() + "),0)+row_number() over () ,")
+					.append(requete.quoteText(viewRulesSet.mapContentSelected().get(ConstanteBD.ID_NORME.getValue()).get(0))+ ", ")
+					.append(requete.quoteText(viewRulesSet.mapContentSelected().get(ConstanteBD.VALIDITE_INF.getValue()).get(0))+ ", ")
+					.append(requete.quoteText(viewRulesSet.mapContentSelected().get(ConstanteBD.VALIDITE_SUP.getValue()).get(0))+ ", ")
+					.append(requete.quoteText(viewRulesSet.mapContentSelected().get(ConstanteBD.VERSION.getValue()).get(0))+ ", ")
+					.append(requete.quoteText(viewRulesSet.mapContentSelected().get(ConstanteBD.PERIODICITE.getValue()).get(0))+ ", ")
 					.append("  liste_colonne.nom_variable_metier,").append("  null,").append(
 							"  null")
-					.append("  FROM ("
-							+ FormatSQL.listeColonneTableMetierSelonFamilleNorme("arc.ihm",
-									viewNorme.mapContentSelected().get(ConstanteBD.ID_FAMILY.getValue()).get(0))
-							+ ") liste_colonne");
+					.append("  FROM (")
+					.append(FormatSQL.listeColonneTableMetierSelonFamilleNorme(ApiService.IHM_SCHEMA,
+									viewNorme.mapContentSelected().get(ConstanteBD.ID_FAMILY.getValue()).get(0)))
+					.append(") liste_colonne");
+				
 			UtilitaireDao.get("arc").executeRequest(null, requete);
 		} catch (SQLException e) {
 			loggerDispatcher.error("Error in preGenererRegleMapping", e, LOGGER);
@@ -1132,6 +984,14 @@ public class GererNormeAction extends ArcAction<NormManagementModel> implements 
 		this.viewJeuxDeReglesCopie.setCustomValue(SELECTED_RULESET_NAME, this.viewMapping.getSessionName());
 		return generateDisplay(model, RESULT_SUCCESS);
 	}
+	
+	@RequestMapping("/selectJeuxDeReglesExpressionCopie")
+	public String selectJeuxDeReglesExpressionCopie(Model model) {
+		
+		this.viewJeuxDeReglesCopie.setCustomValue(SELECTED_RULESET_TABLE, this.viewExpression.getTable());
+		this.viewJeuxDeReglesCopie.setCustomValue(SELECTED_RULESET_NAME, this.viewExpression.getSessionName());
+		return generateDisplay(model, RESULT_SUCCESS);
+	}
 
 	@RequestMapping("/selectJeuxDeReglesCopie")
 	public String selectJeuxDeReglesCopie(Model model) {
@@ -1139,7 +999,7 @@ public class GererNormeAction extends ArcAction<NormManagementModel> implements 
 	}
 
 	@RequestMapping("/copieJeuxDeRegles")
-	public String copieJeuxDeRegles(Model model) {
+	public String copieJeuxDeRegles(Model model) throws SQLException {
 		loggerDispatcher.info("Mon action pour copier un jeu de règles", LOGGER);
 		// le jeu de regle à copier
 		Map<String, ArrayList<String>> selectionOut = viewRulesSet.mapContentSelected();
@@ -1147,185 +1007,93 @@ public class GererNormeAction extends ArcAction<NormManagementModel> implements 
 		Map<String, ArrayList<String>> selectionIn = viewJeuxDeReglesCopie.mapContentSelected();
 		HashMap<String, String> type = viewJeuxDeReglesCopie.mapHeadersType();
 		if (!selectionIn.isEmpty()) {
-			StringBuilder requete = new StringBuilder();
+
+			// columns found in all rules tables
+			String inCommonColumns=new StringBuilder()
+					.append(ConstanteBD.ID_NORME.getValue())
+					.append(","+ConstanteBD.PERIODICITE.getValue())
+					.append(","+ConstanteBD.VALIDITE_INF.getValue())
+					.append(","+ConstanteBD.VALIDITE_SUP.getValue())
+					.append(","+ConstanteBD.VERSION.getValue())
+					.toString();
+
+			// specific columns = column of the table minus common tables minus id_regle (rules generated id)
+			PreparedStatementBuilder getTableSpecificColumns=new PreparedStatementBuilder();
+			getTableSpecificColumns.append("\n SELECT string_agg(column_name,',') ");
+			getTableSpecificColumns.append("\n FROM information_schema.columns c ");
+			getTableSpecificColumns.append("\n WHERE table_schema||'.'||table_name ="+getTableSpecificColumns.quoteText(this.getSelectedJeuDeRegle()));
+			getTableSpecificColumns.append("\n AND column_name NOT IN ");
+			getTableSpecificColumns.append("\n ('"+inCommonColumns.replace(",", "','")+"','"+ConstanteBD.ID_REGLE.getValue()+"') ");
+
+			String specificColumns=UtilitaireDao.get(poolName).getString(null, getTableSpecificColumns);
+			
+			// Build the copy query
+			PreparedStatementBuilder requete = new PreparedStatementBuilder();
+			
 			requete.append("INSERT INTO " + this.getSelectedJeuDeRegle() + " ");
-			if (this.getSelectedJeuDeRegle().equals("arc.ihm_normage_regle")) {
-				gererNormeDao.emptyRuleTable(this.viewRulesSet,
-						getBddTable().getQualifedName(BddTable.ID_TABLE_IHM_NORMAGE_REGLE));
-				requete.append("(");
-				requete.append(String.join(",", ConstanteBD.ID_NORME.getValue()//
-						, ConstanteBD.PERIODICITE.getValue()//
-						, ConstanteBD.VALIDITE_INF.getValue()//
-						, ConstanteBD.VALIDITE_SUP.getValue()//
-						, ConstanteBD.VERSION.getValue()//
-						, ConstanteBD.ID_CLASS.getValue()//
-						, ConstanteBD.RUBRIQUE_NMCL.getValue()//
-						, ConstanteBD.ID_REGLE.getValue()//
-						, ConstanteBD.COMMENTAIRE.getValue()));
+			requete.append("(");
+			requete.append(inCommonColumns+","+specificColumns);
+			requete.append(")");
+			
+			requete.append("\n SELECT ");
+			requete.append(String.join(",", 
+					  requete.quoteText(selectionOut.get(ConstanteBD.ID_NORME.getValue()).get(0))
+					, requete.quoteText(selectionOut.get(ConstanteBD.PERIODICITE.getValue()).get(0))
+					, requete.quoteText(selectionOut.get(ConstanteBD.VALIDITE_INF.getValue()).get(0)) + "::date "
+					, requete.quoteText(selectionOut.get(ConstanteBD.VALIDITE_SUP.getValue()).get(0)) + "::date "
+					, requete.quoteText(selectionOut.get(ConstanteBD.VERSION.getValue()).get(0))));
+			requete.append(","+specificColumns);
 
-				requete.append(")");
-				requete.append("SELECT ");
-				requete.append(String.join(",", "'" + selectionOut.get(ConstanteBD.ID_NORME.getValue()).get(0) + "'"//
-						, "'" + selectionOut.get(ConstanteBD.PERIODICITE.getValue()).get(0) + "'"//
-						, "'" + selectionOut.get(ConstanteBD.VALIDITE_INF.getValue()).get(0) + "'::date "//
-						, "'" + selectionOut.get(ConstanteBD.VALIDITE_SUP.getValue()).get(0) + "'::date "//
-						, "'" + selectionOut.get(ConstanteBD.VERSION.getValue()).get(0) + "'"//
-						, ConstanteBD.ID_CLASS.getValue()//
-						, ConstanteBD.RUBRIQUE_NMCL.getValue()//
-						, ConstanteBD.ID_REGLE.getValue()//
-						, ConstanteBD.COMMENTAIRE.getValue()));
-
-			} else if (this.getSelectedJeuDeRegle().equals("arc.ihm_controle_regle")) {
-				gererNormeDao.emptyRuleTable(this.viewRulesSet,
-						getBddTable().getQualifedName(BddTable.ID_TABLE_IHM_CONTROLE_REGLE));
-				requete.append("(");
-				requete.append(String.join(",", ConstanteBD.ID_NORME.getValue()//
-						, ConstanteBD.PERIODICITE.getValue()//
-						, ConstanteBD.VALIDITE_INF.getValue()//
-						, ConstanteBD.VALIDITE_SUP.getValue()//
-						, ConstanteBD.VERSION.getValue()//
-						, ConstanteBD.ID_CLASS.getValue()//
-						, ConstanteBD.RUBRIQUE_PERE.getValue()//
-						, ConstanteBD.RUBRIQUE_FILS.getValue()//
-						, ConstanteBD.BORNE_INF.getValue()//
-						, ConstanteBD.BORNE_SUP.getValue()//
-						, ConstanteBD.CONDITION.getValue()//
-						, ConstanteBD.PRE_ACTION.getValue()//
-						, ConstanteBD.ID_REGLE.getValue()//
-						, ConstanteBD.COMMENTAIRE.getValue()));
-
-				requete.append(")");
-
-				requete.append("SELECT ");
-				requete.append(String.join(",", "'" + selectionOut.get(ConstanteBD.ID_NORME.getValue()).get(0) + "'"//
-						, "'" + selectionOut.get(ConstanteBD.PERIODICITE.getValue()).get(0) + "'"//
-						, "'" + selectionOut.get(ConstanteBD.VALIDITE_INF.getValue()).get(0) + "'::date "//
-						, "'" + selectionOut.get(ConstanteBD.VALIDITE_SUP.getValue()).get(0) + "'::date "//
-						, "'" + selectionOut.get(ConstanteBD.VERSION.getValue()).get(0) + "'"//
-						, ConstanteBD.ID_CLASS.getValue()//
-						, ConstanteBD.RUBRIQUE_PERE.getValue()//
-						, ConstanteBD.RUBRIQUE_FILS.getValue()//
-						, ConstanteBD.BORNE_INF.getValue()//
-						, ConstanteBD.BORNE_SUP.getValue()//
-						, ConstanteBD.CONDITION.getValue()//
-						, ConstanteBD.PRE_ACTION.getValue()//
-						, ConstanteBD.ID_REGLE.getValue()//
-						, ConstanteBD.COMMENTAIRE.getValue()));
-
-			} else if (this.getSelectedJeuDeRegle().equals("arc.ihm_filtrage_regle")) {
-				gererNormeDao.emptyRuleTable(this.viewRulesSet,
-						getBddTable().getQualifedName(BddTable.ID_TABLE_IHM_FILTRAGE_REGLE));
-				requete.append("(");
-				requete.append(String.join(",", ConstanteBD.ID_REGLE.getValue()//
-						, ConstanteBD.ID_NORME.getValue()//
-						, ConstanteBD.PERIODICITE.getValue()//
-						, ConstanteBD.VALIDITE_INF.getValue()//
-						, ConstanteBD.VALIDITE_SUP.getValue()//
-						, ConstanteBD.VERSION.getValue()//
-						, ConstanteBD.EXPR_REGLE_FILTRE.getValue()//
-						, ConstanteBD.COMMENTAIRE.getValue()));
-
-				requete.append(")");
-
-				requete.append("SELECT ");
-				requete.append(String.join(",",
-						"row_number() over () +(SELECT max(id_regle) FROM " + this.getSelectedJeuDeRegle() + ")",
-						"'" + selectionOut.get(ConstanteBD.ID_NORME.getValue()).get(0) + "'"//
-						, "'" + selectionOut.get(ConstanteBD.PERIODICITE.getValue()).get(0) + "'"//
-						, "'" + selectionOut.get(ConstanteBD.VALIDITE_INF.getValue()).get(0) + "'::date "//
-						, "'" + selectionOut.get(ConstanteBD.VALIDITE_SUP.getValue()).get(0) + "'::date "//
-						, "'" + selectionOut.get(ConstanteBD.VERSION.getValue()).get(0) + "'"//
-						, ConstanteBD.EXPR_REGLE_FILTRE.getValue()//
-						, ConstanteBD.COMMENTAIRE.getValue()));
-
-			} else if (this.getSelectedJeuDeRegle().equals("arc.ihm_mapping_regle")) {
-				gererNormeDao.emptyRuleTable(this.viewRulesSet,
-						getBddTable().getQualifedName(BddTable.ID_TABLE_IHM_MAPPING_REGLE));
-
-				requete.append("(");
-				requete.append(String.join(",", ConstanteBD.ID_REGLE.getValue()//
-						, ConstanteBD.ID_NORME.getValue()//
-						, ConstanteBD.PERIODICITE.getValue()//
-						, ConstanteBD.VALIDITE_INF.getValue()//
-						, ConstanteBD.VALIDITE_SUP.getValue()//
-						, ConstanteBD.VERSION.getValue()//
-						, ConstanteBD.VARIABLE_SORTIE.getValue()//
-						, ConstanteBD.EXPR_REGLE_COL.getValue(), ConstanteBD.COMMENTAIRE.getValue()));
-
-				requete.append(")");
-
-				requete.append("SELECT ");
-				requete.append(String.join(",",
-						"row_number() over () +(SELECT max(id_regle) FROM " + this.getSelectedJeuDeRegle() + ")",
-						"'" + selectionOut.get(ConstanteBD.ID_NORME.getValue()).get(0) + "'"//
-						, "'" + selectionOut.get(ConstanteBD.PERIODICITE.getValue()).get(0) + "'"//
-						, "'" + selectionOut.get(ConstanteBD.VALIDITE_INF.getValue()).get(0) + "'::date "//
-						, "'" + selectionOut.get(ConstanteBD.VALIDITE_SUP.getValue()).get(0) + "'::date "//
-						, "'" + selectionOut.get(ConstanteBD.VERSION.getValue()).get(0) + "'"//
-						, ConstanteBD.VARIABLE_SORTIE.getValue()//
-						, ConstanteBD.EXPR_REGLE_COL.getValue(), ConstanteBD.COMMENTAIRE.getValue()));
-
-			} else if (this.getSelectedJeuDeRegle().equals("arc.ihm_chargement_regle")) {
-				gererNormeDao.emptyRuleTable(this.viewRulesSet,
-						getBddTable().getQualifedName(BddTable.ID_TABLE_IHM_CHARGEMENT_REGLE));
-				requete.append("(");
-				requete.append(String.join(",", ConstanteBD.ID_REGLE.getValue()//
-						, ConstanteBD.ID_NORME.getValue()//
-						, ConstanteBD.PERIODICITE.getValue()//
-						, ConstanteBD.VALIDITE_INF.getValue()//
-						, ConstanteBD.VALIDITE_SUP.getValue()//
-						, ConstanteBD.VERSION.getValue()//
-						, ConstanteBD.TYPE_FICHIER.getValue()//
-						, ConstanteBD.DELIMITER.getValue(), ConstanteBD.FORMAT.getValue(),
-						ConstanteBD.COMMENTAIRE.getValue()));
-
-				requete.append(")");
-
-				requete.append("SELECT ");
-				requete.append(String.join(" , ",
-						"row_number() over () +(SELECT max(id_regle) FROM " + this.getSelectedJeuDeRegle() + ")",
-						"'" + selectionOut.get(ConstanteBD.ID_NORME.getValue()).get(0) + "'"//
-						, "'" + selectionOut.get(ConstanteBD.PERIODICITE.getValue()).get(0) + "'"//
-						, "'" + selectionOut.get(ConstanteBD.VALIDITE_INF.getValue()).get(0) + "'::date"//
-						, "'" + selectionOut.get(ConstanteBD.VALIDITE_SUP.getValue()).get(0) + "'::date"//
-						, "'" + selectionOut.get(ConstanteBD.VERSION.getValue()).get(0) + "'"//
-						, ConstanteBD.TYPE_FICHIER.getValue()//
-						, ConstanteBD.DELIMITER.getValue(), ConstanteBD.FORMAT.getValue(),
-						ConstanteBD.COMMENTAIRE.getValue()));
-
-			}
 			requete.append(" FROM " + this.getSelectedJeuDeRegle() + "  ");
 
 			requete.append(" WHERE ");
 
 			requete.append(String.join(" AND ", //
 					// condition about id_norm
-					ConstanteBD.ID_NORME.getValue() + ManipString.sqlEqual(
+					ConstanteBD.ID_NORME.getValue() + requete.sqlEqual(
 							selectionIn.get(ConstanteBD.ID_NORME.getValue()).get(0),
 							type.get(ConstanteBD.ID_NORME.getValue())),
 					ConstanteBD.PERIODICITE.getValue()
 							// condition about PERIODICITE
-							+ ManipString
+							+ requete
 									.sqlEqual(selectionIn.get(ConstanteBD.PERIODICITE.getValue()).get(0),
 											type.get(ConstanteBD.PERIODICITE.getValue())),
 					ConstanteBD.VALIDITE_INF.getValue()
 							// condition about VALIDITE_INF
-							+ ManipString.sqlEqual(selectionIn.get(ConstanteBD.VALIDITE_INF.getValue()).get(0),
+							+ requete.sqlEqual(selectionIn.get(ConstanteBD.VALIDITE_INF.getValue()).get(0),
 									type.get(ConstanteBD.VALIDITE_INF.getValue())),
 					ConstanteBD.VALIDITE_SUP.getValue()
 							// condition about VALIDITE_SUP
-							+ ManipString
+							+ requete
 									.sqlEqual(selectionIn.get(ConstanteBD.VALIDITE_SUP.getValue()).get(0),
 											type.get(ConstanteBD.VALIDITE_SUP.getValue())),
 					ConstanteBD.VERSION.getValue()
 							// condition about VERSION
-							+ ManipString.sqlEqual(selectionIn.get(ConstanteBD.VERSION.getValue()).get(0),
+							+ requete.sqlEqual(selectionIn.get(ConstanteBD.VERSION.getValue()).get(0),
 									type.get(ConstanteBD.VERSION.getValue()))
 
 			));
-
 			requete.append(" ;");
-
+			
+			// delete the current rules before the copy
+			if (this.getSelectedJeuDeRegle().equals("arc.ihm_chargement_regle")) {
+				gererNormeDao.emptyRuleTable(this.viewRulesSet,
+						getBddTable().getQualifedName(BddTable.ID_TABLE_IHM_CHARGEMENT_REGLE));
+			} else if (this.getSelectedJeuDeRegle().equals("arc.ihm_normage_regle")) {
+				gererNormeDao.emptyRuleTable(this.viewRulesSet,
+						getBddTable().getQualifedName(BddTable.ID_TABLE_IHM_NORMAGE_REGLE));
+			} else if (this.getSelectedJeuDeRegle().equals("arc.ihm_controle_regle")) {
+				gererNormeDao.emptyRuleTable(this.viewRulesSet,
+						getBddTable().getQualifedName(BddTable.ID_TABLE_IHM_CONTROLE_REGLE));
+			} else if (this.getSelectedJeuDeRegle().equals("arc.ihm_filtrage_regle")) {
+				gererNormeDao.emptyRuleTable(this.viewRulesSet,
+						getBddTable().getQualifedName(BddTable.ID_TABLE_IHM_FILTRAGE_REGLE));
+			} else if (this.getSelectedJeuDeRegle().equals("arc.ihm_mapping_regle")) {
+				gererNormeDao.emptyRuleTable(this.viewRulesSet,
+						getBddTable().getQualifedName(BddTable.ID_TABLE_IHM_MAPPING_REGLE));
+			}
+			
+			// excute the copy
 			try {
 				UtilitaireDao.get("arc").executeRequest(getQueryHandler().getWrapped(), requete);
 			} catch (SQLException ex) {
@@ -1394,6 +1162,14 @@ public class GererNormeAction extends ArcAction<NormManagementModel> implements 
 
 	public void setViewMapping(VObject viewMapping) {
 		this.viewMapping = viewMapping;
+	}
+	
+	public VObject getViewExpression() {
+		return viewExpression;
+	}
+
+	public void setViewExpression(VObject viewExpression) {
+		this.viewExpression = viewExpression;
 	}
 
 	public VObject getViewJeuxDeReglesCopie() {

@@ -11,6 +11,7 @@ public class PropertiesHandler {
 	
     /* Database */
     private String databasePoolName;
+    private String databaseRestrictedUsername;
     private String databaseUrl;
     private String databaseUsername;
     private String databasePassword;
@@ -28,7 +29,6 @@ public class PropertiesHandler {
     private String batchArcEnvironment;
     /* Miscellaneous */
     private String version;
-    private String schemaReference;
     private String application;
     private String tn;
     /* Directories */
@@ -37,6 +37,7 @@ public class PropertiesHandler {
     private String storageDirectory;
 
     private String authorizedRoles;
+    private String disableDebugGui;
 
     public void initializeLog() {
         URL log4jprops = this.getClass().getClassLoader().getResource(logConfiguration);
@@ -110,6 +111,17 @@ public class PropertiesHandler {
         this.databaseSchema = databaseSchema;
     }
 
+    
+    public boolean isLdapActive() {
+    	return !ldapDirectoryUri.isEmpty();
+    }
+    
+    public String getLdapApplicatioName() {
+    	if (ldapDirectoryIdent.isEmpty()){
+    		return "";
+    	}
+    	return ldapDirectoryIdent.substring("appli_".length());
+    }
 
     public String getLdapDirectoryUri() {
         return ldapDirectoryUri;
@@ -191,16 +203,6 @@ public class PropertiesHandler {
     }
 
 
-    public String getSchemaReference() {
-        return schemaReference;
-    }
-
-
-    public void setSchemaReference(String schemaReference) {
-        this.schemaReference = schemaReference;
-    }
-
-
     public String getApplication() {
         return application;
     }
@@ -258,6 +260,22 @@ public class PropertiesHandler {
 			return new String[0];
 		}
 		return authorizedRoles.split(",");
+	}
+
+	public String getDatabaseRestrictedUsername() {
+		return databaseRestrictedUsername;
+	}
+
+	public void setDatabaseRestrictedUsername(String databaseRestrictedUsername) {
+		this.databaseRestrictedUsername = databaseRestrictedUsername;
+	}
+
+	public String getDisableDebugGui() {
+		return disableDebugGui;
+	}
+
+	public void setDisableDebugGui(String disableDebugGui) {
+		this.disableDebugGui = disableDebugGui;
 	}
     
 }

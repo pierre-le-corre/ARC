@@ -15,11 +15,13 @@ import fr.insee.arc.core.model.TraitementRapport;
 import fr.insee.arc.core.service.ApiFiltrageService;
 import fr.insee.arc.core.service.ApiService;
 import fr.insee.arc.core.service.engine.ServiceCommunFiltrageMapping;
+import fr.insee.arc.utils.dao.PreparedStatementBuilder;
 import fr.insee.arc.utils.dao.UtilitaireDao;
 import fr.insee.arc.utils.format.Format;
 import fr.insee.arc.utils.structure.tree.HierarchicalView;
 import fr.insee.arc.utils.utils.FormatSQL;
 import fr.insee.arc.utils.utils.Pair;
+import fr.insee.arc.utils.utils.Sleep;
 import fr.insee.arc.core.util.StaticLoggerDispatcher;
 
 /**
@@ -31,7 +33,6 @@ public class ThreadFiltrageService extends ApiFiltrageService implements Runnabl
 
     private static final Logger logger = LogManager.getLogger(ThreadFiltrageService.class);
     int indice;
-    public Thread t = null;
 
     protected String tableFiltragePilTemp;
     protected String tableTempFiltrageOk;
@@ -40,8 +41,6 @@ public class ThreadFiltrageService extends ApiFiltrageService implements Runnabl
     protected String tableFiltrageKo;
     protected String tableFiltrageOk;
     
-    private Connection connexion;
-
     public ThreadFiltrageService(Connection connexion, int currentIndice, ApiFiltrageService theApi) {
 
         this.indice = currentIndice;
@@ -53,15 +52,15 @@ public class ThreadFiltrageService extends ApiFiltrageService implements Runnabl
         try {
             this.connexion.setClientInfo("ApplicationName", "Filtrage fichier "+idSource);
         } catch (SQLClientInfoException e) {
-            // TODO Auto-generated catch block
-            e.printStackTrace();
+			StaticLoggerDispatcher.error(e,LOGGER_APISERVICE);
         }
         
-        this.tableFiltrageDataTemp = FormatSQL.temporaryTableName("filtrage_data_temp");
-        this.tableFiltragePilTemp = FormatSQL.temporaryTableName("filtrage_pil_Temp");
+        this.tableFiltrageDataTemp = "filtrage_data_temp";
+        this.tableFiltragePilTemp = "filtrage_pil_Temp";
         
-        this.tableTempFiltrageKo = FormatSQL.temporaryTableName(dbEnv(this.getEnvExecution()) + this.getCurrentPhase() + "_" + TraitementEtat.KO + "$" +indice);
-        this.tableTempFiltrageOk = FormatSQL.temporaryTableName(dbEnv(this.getEnvExecution()) + this.getCurrentPhase() + "_" + TraitementEtat.OK + "$" +indice);
+        this.tableTempFiltrageKo = "tableTempFiltrageKo";
+        this.tableTempFiltrageOk = "tableTempFiltrageOk";
+        
         this.tableFiltrageKo=ApiService.globalTableName(this.getEnvExecution(), this.getCurrentPhase(), "ko");
         this.tableFiltrageOk=ApiService.globalTableName(this.getEnvExecution(), this.getCurrentPhase(), "ok");
         
@@ -94,26 +93,20 @@ public class ThreadFiltrageService extends ApiFiltrageService implements Runnabl
             
             
         } catch (Exception e) {
-            e.printStackTrace();
+			StaticLoggerDispatcher.error(e,LOGGER_APISERVICE);
 	    try {
-		this.repriseSurErreur(this.connexion, this.getCurrentPhase(), this.tablePil, this.idSource, e,
-			"aucuneTableADroper");
-	    } catch (SQLException e2) {
-		// TODO Auto-generated catch block
-		e2.printStackTrace();
-	    }
-            try {
-                Thread.sleep(100);
-            } catch (InterruptedException e1) {
-                // TODO Auto-generated catch block
-                e1.printStackTrace();
-            }
+			this.repriseSurErreur(this.connexion, this.getCurrentPhase(), this.tablePil, this.idSource, e,
+				"aucuneTableADroper");
+		    } catch (SQLException e2) {
+				StaticLoggerDispatcher.error(e2,LOGGER_APISERVICE);
+		    }
+            Sleep.sleep(PREVENT_ERROR_SPAM_DELAY);
         }
 
     }
 
     public void start() {
-        StaticLoggerDispatcher.debug("Starting ThreadFiltrageService", LOGGER);
+        StaticLoggerDispatcher.debug("Starting ThreadFiltrageService", LOGGER_APISERVICE);
         if (t == null) {
             t = new Thread(this, indice + "");
             t.start();
@@ -139,8 +132,11 @@ public class ThreadFiltrageService extends ApiFiltrageService implements Runnabl
 
         
         UtilitaireDao.get("arc").dropTable(this.connexion, this.tableTempFiltrageOk, this.tableFiltrageDataTemp, this.tableTempFiltrageKo);
-        this.seuilExclusion = UtilitaireDao.get("arc").getString(this.connexion,
-                new StringBuilder("SELECT valeur FROM " + this.tableSeuil + " WHERE NOM = 'filtrage_taux_exclusion_accepte'"));
+        
+        
+        PreparedStatementBuilder requete=new PreparedStatementBuilder();
+        requete.append("SELECT valeur FROM " + this.tableSeuil + " WHERE nom = "+requete.quoteText("filtrage_taux_exclusion_accepte"));
+        this.seuilExclusion = UtilitaireDao.get("arc").getString(this.connexion,requete);
 
         
         // Fabrication de la table de filtrage temporaire
@@ -157,13 +153,6 @@ public class ThreadFiltrageService extends ApiFiltrageService implements Runnabl
         }
         UtilitaireDao.get("arc").executeBlock(this.connexion,FormatSQL.createAsSelectFrom(this.tableTempFiltrageOk, this.tableFiltrageDataTemp, "false"));
 
-
-
-        // PAS DELETE THIS
-        // if (logger.isInfoEnabled()) {
-        // StaticLoggerDispatcher.info("Création des indexes sur la table de contrôle temporaire", logger);
-        // }
-        // creerIndexTableControleTemporaire(this.connexion, this.tableTempControleOk);
     }
 
     /**
@@ -192,10 +181,6 @@ public class ThreadFiltrageService extends ApiFiltrageService implements Runnabl
      * @throws SQLException
      */
     public void filtrer() throws SQLException {
-        // if (logger.isInfoEnabled()) {
-        // StaticLoggerDispatcher.info("Nombre de lignes à traiter : " + UtilitaireDao.get("arc").getCount(this.connexion,
-        // this.tableTempControleOk), logger);
-        // }
         if (logger.isInfoEnabled()) {
             StaticLoggerDispatcher.info("Table des données à filtrer utilisée : " + this.tableFiltrageDataTemp, logger);
         }
@@ -205,7 +190,7 @@ public class ThreadFiltrageService extends ApiFiltrageService implements Runnabl
                 /**
                  * La requête de sélection de la relation
                  */
-                getRegles(this.tableFiltrageRegle, this.tableFiltragePilTemp)
+                new PreparedStatementBuilder(getRegles(this.tableFiltrageRegle, this.tableFiltragePilTemp))
                 ));
 
         this.normeToPeriodiciteToValiditeInfToValiditeSupToRegle = calculerNormeToPeriodiciteToValiditeInfToValiditeSupToRegle(regleActive);
@@ -242,13 +227,13 @@ public class ThreadFiltrageService extends ApiFiltrageService implements Runnabl
                 this.tableTempFiltrageKo, this.normeToPeriodiciteToValiditeInfToValiditeSupToRegle, this.seuilExclusion, 
                 this.tableFiltragePilTemp);
         
-        UtilitaireDao.get("arc").executeBlock(this.connexion, "set enable_nestloop=off;"+requete+"set enable_nestloop=on;");
+        UtilitaireDao.get("arc").executeImmediate(this.connexion, "set enable_nestloop=off;"+requete+"set enable_nestloop=on;");
 
     }
     
     /**
      * On sort les données des tables temporaires du module vers : 
-     * - les tables définitives du filtrage (filtrage_ok, filtrage_ok_todo et filtrage_ko)
+     * - les tables définitives du filtrage (filtrage_ok, filtrage_ok_to_do et filtrage_ko)
      * - la table de piltage globale
      *
      * IMPORTANT : les ajouts ou mise à jours de données sur les tables de l'application doivent avoir lieu dans un même bloc de transaction
@@ -259,7 +244,9 @@ public class ThreadFiltrageService extends ApiFiltrageService implements Runnabl
      */
     public void insertionFinale() throws Exception
     {
-
+    	// promote the application user account to full right
+    	switchToFullRightRole();
+    	
     	// créer les tables héritées
     	String tableIdSourceOK=tableOfIdSource(this.tableFiltrageOk ,this.idSource);
     	createTableInherit(connexion, this.tableTempFiltrageOk, tableIdSourceOK);
@@ -277,7 +264,6 @@ public class ThreadFiltrageService extends ApiFiltrageService implements Runnabl
         {
             requete.append(FormatSQL.tryQuery("alter table "+tableIdSourceOK+" inherit "+ this.tableFiltrageOk + "_todo;"));
             requete.append(FormatSQL.tryQuery("DROP TABLE IF EXISTS "+tableIdSourceKO+";"));
-//            requete.append(FormatSQL.tryQuery("alter table "+tableIdSourceKO+" inherit "+ this.tableFiltrageKo +";"));
         }
         
         requete.append(this.marquageFinal(this.tablePil, this.tableFiltragePilTemp));
@@ -298,10 +284,8 @@ public class ThreadFiltrageService extends ApiFiltrageService implements Runnabl
         String aTableControleCount = aTableControleOk.replace(".", "_") + "_COUNT";
         requete.append(FormatSQL.dropTable(aTableControleCount));
 
+        requete.append("\n BEGIN; ");
         requete.append("\n create temporary table " + aTableControleCount + " "+FormatSQL.WITH_NO_VACUUM+" AS SELECT id_source, id, (");
-//        requete.append("CASE WHEN false THEN 2 ");
-        
-        
         requete.append("\n CASE ");
         boolean hasRegle=false;
         for (HierarchicalView expr : aNormeToPeriodiciteToValiditeInfToValiditeSupToRegle.getLevel("expr_regle_filtre"))
@@ -316,27 +300,11 @@ public class ThreadFiltrageService extends ApiFiltrageService implements Runnabl
         	requete.append("\n WHEN true THEN 0 ");
         }
         requete.append("\n END ");
-        
-//        for (HierarchicalView idNorme : aNormeToPeriodiciteToValiditeInfToValiditeSupToRegle.children()) {
-//            for (HierarchicalView periodicite : idNorme.children()) {
-//                for (HierarchicalView validiteInf : periodicite.children()) {
-//                    for (HierarchicalView validiteSup : validiteInf.children()) {
-//                        requete.append("\n WHEN EXISTS(SELECT 1 FROM " + aTablePilotage + " pil");
-//                        requete.append("\n WHERE pil.id_norme='" + idNorme.getLocalRoot() + "' ");
-//                        requete.append("\n AND pil.periodicite='" + periodicite.getLocalRoot() + "' ");
-//                        requete.append("\n AND pil.validite_inf='" + validiteInf.getLocalRoot() + "' ");
-//                        requete.append("\n AND pil.validite_sup='" + validiteSup.getLocalRoot() + "'  ");
-//                        requete.append("\n AND pil.id_source = ctrl.id_source) ");
-//                        requete.append("\n THEN CASE WHEN " + validiteSup.getUniqueChild().getLocalRoot() + " THEN 1 ELSE 0 END ");
-//                    }
-//                }
-//            }
-//        }
-//        requete.append("\n ELSE 2 ");
-//        requete.append("END)::bigint as check_against_rule ");
         requete.append(")::bigint as check_against_rule ");
         requete.append("\n from " + aTableControleOk + " ctrl; ");
         requete.append("\n COMMIT; ");
+        
+        requete.append("\n BEGIN; ");
         requete.append("\n ANALYZE " + aTableControleCount + ";");
         /**
          * Calcul du taux de filtrage, id_norme, periodicite, validite_inf, validite_sup
@@ -345,11 +313,13 @@ public class ThreadFiltrageService extends ApiFiltrageService implements Runnabl
         requete.append("\n FROM (SELECT id_source, avg(check_against_rule) as excluded_rate FROM " + aTableControleCount
                 + " GROUP BY id_source) rate ");
         requete.append("\n WHERE rate.id_source = pil.id_source;\n");
+        requete.append("\n COMMIT; ");
 
 
         /**
          * A partir du taux de filtrage écriture de l'état et du rapport
          */
+        requete.append("\n BEGIN; ");
         requete.append("\n UPDATE " + aTablePilotage + " ");
         requete.append("\n SET etat_traitement= CASE WHEN taux_ko = 0 THEN '{OK}'::text[] ");
         requete.append("\n              WHEN 0<taux_ko AND taux_ko<" + excludedRate + " THEN '{OK,KO}' ::text[] ");
@@ -361,22 +331,15 @@ public class ThreadFiltrageService extends ApiFiltrageService implements Runnabl
         requete.append("\n COMMIT; ");
         
         /**
-         * Vont en KO les fichiers sans règles
-         */
-//        requete.append("\n UPDATE " + aTablePilotage + " pil SET etat_traitement='{KO}', rapport='" + TraitementRapport.TOUTE_PHASE_AUCUNE_REGLE
-//                + "'");
-//        requete.append("\n WHERE EXISTS (SELECT 1 FROM " + aTableControleCount
-//                + " ctrl WHERE pil.id_source=ctrl.id_source and 2=ctrl.check_against_rule);\n");
-//        requete.append("\n COMMIT; ");
-        
-        /**
          * Vont en KO les fichiers sans aucun enregistrement
          */
+        requete.append("\n BEGIN; ");
         requete.append("\n UPDATE " + aTablePilotage + " pil SET etat_traitement='{KO}',");
         requete.append("\n rapport='" + TraitementRapport.TOUTE_PHASE_AUCUN_ENREGISTREMENT + "'");
         requete.append("\n  WHERE etat_traitement='{ENCOURS}';\n");
-        
         requete.append("\n COMMIT; ");
+        
+        requete.append("\n BEGIN; ");
         requete.append("\n ANALYZE " + aTablePilotage + ";");
         requete.append("\n ANALYZE " + aTableControleOk + ";");
         requete.append("\n COMMIT; ");
@@ -433,9 +396,6 @@ public class ThreadFiltrageService extends ApiFiltrageService implements Runnabl
         boolean onlyNull = returned.equalsIgnoreCase(exprRegle);
         returned = returned.replaceAll(regexSelectionRubrique, "null");
         onlyNull &= !returned.equals(exprRegle);
-//        if (logger.isTraceEnabled()) {
-//            StaticLoggerDispatcher.trace("Valeur trouvée pour " + exprRegle + " : " + returned, logger);
-//        }
         return new Pair<Boolean, String>(onlyNull, returned);
     }
 

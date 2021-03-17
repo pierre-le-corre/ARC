@@ -3,17 +3,19 @@ package fr.insee.arc.web.action;
 import java.nio.file.Paths;
 import java.sql.SQLException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.MessageSource;
 import org.springframework.context.annotation.Scope;
 import org.springframework.context.annotation.ScopedProxyMode;
 import org.springframework.http.MediaType;
@@ -23,7 +25,6 @@ import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.context.WebApplicationContext;
-import org.springframework.web.multipart.MultipartFile;
 
 import fr.insee.arc.core.factory.ApiServiceFactory;
 import fr.insee.arc.core.model.BddTable;
@@ -31,6 +32,7 @@ import fr.insee.arc.core.model.TraitementEtat;
 import fr.insee.arc.core.model.TraitementPhase;
 import fr.insee.arc.core.service.ApiInitialisationService;
 import fr.insee.arc.core.service.ApiService;
+import fr.insee.arc.utils.dao.PreparedStatementBuilder;
 import fr.insee.arc.utils.dao.UtilitaireDao;
 import fr.insee.arc.utils.format.Format;
 import fr.insee.arc.utils.structure.GenericBean;
@@ -59,6 +61,9 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 	private static final String WRITING_REPO = "entrepotEcriture";
 
 	private static final Logger LOGGER = LogManager.getLogger(PilotageBASAction.class);
+	
+	@Autowired
+	private MessageSource messageSource;
 	
 	private VObject viewPilotageBAS = new ViewPilotageBAS();
 	
@@ -115,11 +120,11 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 		LoggerHelper.debug(LOGGER, "* initializePilotageBAS *");
 		HashMap<String, String> defaultInputFields = new HashMap<>();
 		
-		StringBuilder requete = new StringBuilder();
+		PreparedStatementBuilder requete = new PreparedStatementBuilder();
         requete.append("select * from "+getBddTable().getQualifedName(BddTable.ID_TABLE_PILOTAGE_FICHIER_T)+" order by date_entree desc");
 		
 		this.vObjectService.initialize(
-				getViewPilotageBAS(), requete.toString(), 
+				getViewPilotageBAS(), requete, 
 				getBddTable().getQualifedName(BddTable.ID_TABLE_PILOTAGE_FICHIER_T), defaultInputFields,
 				this::reworkPilotageContent);
 	}
@@ -228,7 +233,7 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 	 */
 	@RequestMapping("/enterPilotageBAS")
 	public String enterPilotageBAS(Model model) {
-		ApiInitialisationService.bddScript(getBacASable(), null);
+		ApiInitialisationService.bddScript(null, new String[] {getBacASable()});
 		return generateDisplay(model, RESULT_SUCCESS);
 	}
 
@@ -249,14 +254,14 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 	public void initializeRapportBAS() {
 		LoggerHelper.debug(LOGGER, "* initializeRapportBAS *");
 		HashMap<String, String> defaultInputFields = new HashMap<>();
-		StringBuilder requete = new StringBuilder();
+		PreparedStatementBuilder requete = new PreparedStatementBuilder();
 		requete.append(
 				"select date_entree, phase_traitement, array_to_string(etat_traitement,'$') as etat_traitement, rapport, count(1) as nb ");
 		requete.append("from " + getBddTable().getQualifedName(BddTable.ID_TABLE_PILOTAGE_FICHIER));
 		requete.append(" where rapport is not null ");
 		requete.append("group by date_entree, phase_traitement, etat_traitement, rapport ");
 		requete.append("order by date_entree asc ");
-		this.vObjectService.initialize(getViewRapportBAS(), requete.toString(), null, defaultInputFields);
+		this.vObjectService.initialize(getViewRapportBAS(), requete, null, defaultInputFields);
 	}
 
 	@RequestMapping("/selectRapportBAS")
@@ -274,14 +279,13 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 	}
 
 	@RequestMapping("/informationInitialisationPROD")
-    public String informationInitialisationPROD(Model model) {
-		
-    	// demande l'initialisation : met au jour -1 à 22h
+    public String informationInitialisationPROD(Model model, HttpServletRequest request) {
     	try {
-			String heure=UtilitaireDao.get("arc").getString(null, "SELECT last_init from arc.pilotage_batch;");
-			String etat=UtilitaireDao.get("arc").getString(null, "SELECT case when operation='O' then 'actif' else 'inactif' end from arc.pilotage_batch;");
-			
-    		this.getViewPilotageBAS().setMessage("Le batch est "+etat+".\nLe prochain batch d'initialisation est programmé aprés : "+heure);
+			String time = UtilitaireDao.get("arc").getString(null, new PreparedStatementBuilder("SELECT last_init from arc.pilotage_batch"));
+			String state = UtilitaireDao.get("arc").getString(null, new PreparedStatementBuilder("SELECT case when operation='O' then 'active' else 'inactive' end from arc.pilotage_batch;"));
+			state = messageSource.getMessage("managementSandbox.batch.status." + state, null, request.getLocale());
+    		this.getViewPilotageBAS().setMessage("managementSandbox.batch.status");
+    		this.getViewPilotageBAS().setMessageArgs(state, time);
 
 		} catch (SQLException e) {
 			loggerDispatcher.error("Error in informationInitialisationPROD", e, LOGGER);
@@ -290,15 +294,14 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
     }
 
     @RequestMapping("/retarderBatchInitialisationPROD")
-    @SQLExecutor
     public String retarderBatchInitialisationPROD(Model model) {
-    	
-    	// demande l'initialisation : met au jour -1 à 22h
     	try {
-			UtilitaireDao.get("arc").executeRequest(null, "UPDATE arc.pilotage_batch set last_init=to_char(current_date + interval '7 days','yyyy-mm-dd')||':22';");
+			UtilitaireDao.get("arc").executeRequest(null, 
+					new PreparedStatementBuilder("UPDATE arc.pilotage_batch set last_init=to_char(current_date + interval '7 days','yyyy-mm-dd')||':22';"));
 
-			String heure=UtilitaireDao.get("arc").getString(null, "SELECT last_init from arc.pilotage_batch;");
-			this.getViewPilotageBAS().setMessage("Le prochain batch d'initialisation aura lieu ce soir après : "+heure);
+			String time = UtilitaireDao.get("arc").getString(null, new PreparedStatementBuilder("SELECT last_init from arc.pilotage_batch"));
+			this.getViewPilotageBAS().setMessage("managementSandbox.batch.init.time");
+			this.getViewPilotageBAS().setMessageArgs(time);
 
 			
 		} catch (SQLException e) {
@@ -309,15 +312,15 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
     }
     
     @RequestMapping("/demanderBatchInitialisationPROD")
-    @SQLExecutor
     public String demanderBatchInitialisationPROD(Model model) {
     	
     	// demande l'initialisation : met au jour -1 à 22h
     	try {
-			UtilitaireDao.get("arc").executeRequest(null, "UPDATE arc.pilotage_batch set last_init=to_char(current_date-interval '1 days','yyyy-mm-dd')||':22';");
+			UtilitaireDao.get("arc").executeRequest(null, new PreparedStatementBuilder("UPDATE arc.pilotage_batch set last_init=to_char(current_date-interval '1 days','yyyy-mm-dd')||':22';"));
 			
-			String heure=UtilitaireDao.get("arc").getString(null, "SELECT last_init from arc.pilotage_batch;");
-			this.getViewPilotageBAS().setMessage("Le prochain batch d'initialisation aura lieu dans quelques minutes (après "+heure+") ");
+			String time = UtilitaireDao.get("arc").getString(null, new PreparedStatementBuilder("SELECT last_init from arc.pilotage_batch"));
+			this.getViewPilotageBAS().setMessage("managementSandbox.batch.init.time");
+			this.getViewPilotageBAS().setMessageArgs(time);
 
 			
 		} catch (SQLException e) {
@@ -328,13 +331,10 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
     }
     
     @RequestMapping("/toggleOnPROD")
-    @SQLExecutor
     public String toggleOnPROD(Model model) {
-    	
-    	// demande l'initialisation : met au jour -1 à 22h
     	try {
-			UtilitaireDao.get("arc").executeRequest(null, "UPDATE arc.pilotage_batch set operation='O'; ");
-			this.getViewPilotageBAS().setMessage("Production activée ");
+			UtilitaireDao.get("arc").executeRequest(null, new PreparedStatementBuilder("UPDATE arc.pilotage_batch set operation='O'; "));
+			this.getViewPilotageBAS().setMessage("managementSandbox.batch.status.switch.on");
 		} catch (SQLException e) {
 			loggerDispatcher.error("Error in toggleOnPROD", e, LOGGER);
 		}
@@ -342,13 +342,10 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
     }
 
     @RequestMapping("/toggleOffPROD")
-    @SQLExecutor
     public String toggleOffPROD(Model model) {
-    	
-    	// demande l'initialisation : met au jour -1 à 22h
     	try {
-			UtilitaireDao.get("arc").executeRequest(null, "UPDATE arc.pilotage_batch set operation='N'; ");
-			this.getViewPilotageBAS().setMessage("Production arretée ");
+			UtilitaireDao.get("arc").executeRequest(null, new PreparedStatementBuilder("UPDATE arc.pilotage_batch set operation='N'; "));
+			this.getViewPilotageBAS().setMessage("managementSandbox.batch.status.switch.off");
 		} catch (SQLException e) {
 			loggerDispatcher.error("Error in toggleOffPROD", e, LOGGER);
 		}
@@ -386,14 +383,15 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 			this.getViewPilotageBAS().setMessage(msg);
 		}
 		this.getViewEntrepotBAS().setCustomValue(WRITING_REPO, null);
-		// Lancement de l'initialisation dans la foulée
-		ApiServiceFactory.getService(TraitementPhase.INITIALISATION.toString(), "arc.ihm",
-				getBacASable(), this.repertoire,
-				String.valueOf(TraitementPhase.INITIALISATION.getNbLigneATraiter())).invokeApi();
-		ApiServiceFactory.getService(TraitementPhase.RECEPTION.toString(), "arc.ihm",
-				getBacASable(), this.repertoire,
-				String.valueOf(TraitementPhase.RECEPTION.getNbLigneATraiter())).invokeApi();
-
+		if (!isEnvProd()) {
+			// Lancement de l'initialisation dans la foulée
+			ApiServiceFactory.getService(TraitementPhase.INITIALISATION.toString(), ApiService.IHM_SCHEMA,
+					getBacASable(), this.repertoire,
+					String.valueOf(TraitementPhase.INITIALISATION.getNbLigneATraiter())).invokeApi();
+			ApiServiceFactory.getService(TraitementPhase.RECEPTION.toString(), ApiService.IHM_SCHEMA,
+					getBacASable(), this.repertoire,
+					String.valueOf(TraitementPhase.RECEPTION.getNbLigneATraiter())).invokeApi();
+		}
 		
 		
 		return generateDisplay(model, RESULT_SUCCESS);
@@ -411,11 +409,11 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 				&& !entrepotLecture.equals("")) {
 			HashMap<String, String> defaultInputFields = new HashMap<>();
 			
-			 StringBuilder requete = new StringBuilder();
-			 requete.append("select * from "+getBddTable().getQualifedName(BddTable.ID_TABLE_PILOTAGE_ARCHIVE)+" where entrepot='"
-	                    + entrepotLecture + "'");
+			PreparedStatementBuilder requete = new PreparedStatementBuilder();
+			requete.append("select * from "+getBddTable().getQualifedName(BddTable.ID_TABLE_PILOTAGE_ARCHIVE)+" where entrepot="
+	                    + requete.quoteText(entrepotLecture) + " ");
 
-			this.vObjectService.initialize(getViewArchiveBAS(), requete.toString(), null, defaultInputFields);
+			this.vObjectService.initialize(getViewArchiveBAS(), requete, null, defaultInputFields);
 		} else {
 
 			this.vObjectService.destroy(getViewArchiveBAS());
@@ -426,7 +424,7 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 		LoggerHelper.debug(LOGGER, "* initializeEntrepotBAS *");
 	
 		HashMap<String, String> defaultInputFields = new HashMap<>();
-		StringBuilder requete = new StringBuilder();
+		PreparedStatementBuilder requete = new PreparedStatementBuilder();
 	
 		try {
 			if (UtilitaireDao.get("arc").hasResults(null, FormatSQL.tableExists("arc.ihm_entrepot"))) {
@@ -438,7 +436,7 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 			LoggerHelper.error(LOGGER, "error when initialize repository", e);
 		}
 	
-		this.vObjectService.initialize(this.getViewEntrepotBAS(), requete.toString(), null, defaultInputFields);
+		this.vObjectService.initialize(this.getViewEntrepotBAS(), requete, null, defaultInputFields);
 	}
 
 	/**
@@ -467,9 +465,12 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 
 		initializeArchiveBAS();
 		
-		StringBuilder querySelection = new StringBuilder();
-		querySelection.append("select distinct alias_de_table.nom_archive as nom_fichier from ("
-				+ this.getViewArchiveBAS().getMainQuery() + ") alias_de_table ");
+		
+		PreparedStatementBuilder querySelection = new PreparedStatementBuilder();
+		
+		querySelection.append("select distinct alias_de_table.nom_archive as nom_fichier from (");
+		querySelection.append(this.getViewArchiveBAS().getMainQuery());
+		querySelection.append(") alias_de_table ");
 		querySelection.append(this.vObjectService.buildFilter(this.getViewArchiveBAS().getFilterFields(),
 				this.getViewArchiveBAS().getHeadersDLabel()));
 
@@ -484,15 +485,21 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 		GenericBean g;
 		String entrepot = "";
 		try {
-			g = new GenericBean(UtilitaireDao.get("arc").executeRequest(null,
-					"SELECT DISTINCT entrepot FROM (" + this.getViewArchiveBAS().getMainQuery() + ") alias_de_table "));
+			
+			PreparedStatementBuilder requete=new PreparedStatementBuilder();
+			requete.append("SELECT DISTINCT entrepot FROM (");
+			requete.append(this.getViewArchiveBAS().getMainQuery());
+			requete.append(") alias_de_table ");
+			
+			g = new GenericBean(UtilitaireDao.get("arc").executeRequest(null, requete));
 			entrepot = g.mapContent().get("entrepot").get(0);
 		} catch (SQLException e) {
 			e.printStackTrace();
 		}
 		listRepertoire.add(TraitementPhase.RECEPTION + "_" + entrepot + "_ARCHIVE");
 		String chemin = Paths.get(this.repertoire, getBacASable().toUpperCase()).toString();
-		this.vObjectService.downloadEnveloppe(getViewArchiveBAS(), response, querySelection.toString(), chemin, listRepertoire);
+		
+		this.vObjectService.downloadEnveloppe(getViewArchiveBAS(), response, querySelection, chemin, listRepertoire);
 	}
 
 	@RequestMapping("/executerBatch")
@@ -500,31 +507,33 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 		loggerDispatcher.debug("executerBatch", LOGGER);
 		loggerDispatcher.debug(String.format("Service %s", phaseAExecuter), LOGGER);
 		
-		ApiInitialisationService.synchroniserSchemaExecution(null, "arc.ihm",
+		ApiInitialisationService.synchroniserSchemaExecution(null, ApiService.IHM_SCHEMA,
 				getBacASable());
 
-		ApiServiceFactory.getService(phaseAExecuter, "arc.ihm", getBacASable(),
-				this.repertoire, "10000000").invokeApi();
+		ApiServiceFactory.getService(phaseAExecuter, ApiService.IHM_SCHEMA, getBacASable(),
+				this.repertoire, "10000000"
+				//,"1" // to set batch mode or not
+				).invokeApi();
 		return generateDisplay(model, RESULT_SUCCESS);
 	}
 
 	/*
 	 * Allow the user to select files for the undoBatch fucntionnality
 	 */
-	public String undoFilesSelection() {
-		String selectedSrc = null;
+	public PreparedStatementBuilder undoFilesSelection() {
+		PreparedStatementBuilder selectedSrc = new PreparedStatementBuilder();
 
 		HashMap<String, ArrayList<String>> m = new HashMap<>(
 				getViewFichierBAS().mapContentSelected());
-
+		
 		if (!m.isEmpty() && m.get("id_source") != null) {
 			for (int i = 0; i < m.get("id_source").size(); i++) {
-				if (selectedSrc != null) {
-					selectedSrc += "\n UNION ALL SELECT ";
+				if (selectedSrc.length()>0) {
+					selectedSrc.append("\n UNION ALL SELECT ");
 				} else {
-					selectedSrc = "SELECT ";
+					selectedSrc.append("SELECT ");
 				}
-				selectedSrc += "'" + m.get("id_source").get(i) + "'::text as id_source ";
+				selectedSrc.append(" " + selectedSrc.quoteText(m.get("id_source").get(i)) + "::text as id_source ");
 			}
 		}
 		return selectedSrc;
@@ -535,22 +544,8 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 		loggerDispatcher.debug("undoBatch", LOGGER);
 		loggerDispatcher.debug(String.format("undo service %s", phaseAExecuter), LOGGER);
 		
-		
-		if (TraitementPhase.valueOf(phaseAExecuter).getOrdre()==0)
-		{
-			resetBAS(model);
-			return generateDisplay(model, RESULT_SUCCESS);
-		}
-		
-		ApiInitialisationService serv = new ApiInitialisationService(TraitementPhase.INITIALISATION.toString(),
-				"arc.ihm", (String) getBacASable(), this.repertoire,
-				TraitementPhase.INITIALISATION.getNbLigneATraiter());
-		try {
-			serv.retourPhasePrecedente(TraitementPhase.valueOf(phaseAExecuter), undoFilesSelection(),
-					new ArrayList<>(Arrays.asList(TraitementEtat.OK, TraitementEtat.KO)));
-		} finally {
-            serv.finaliser();
-		}
+		ApiService.backToTargetPhase(phaseAExecuter, getBacASable(), this.repertoire, undoFilesSelection());
+
 		return generateDisplay(model, RESULT_SUCCESS);
 	}
 
@@ -559,21 +554,8 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 	@RequestMapping("/resetBAS")
 	public String resetBAS(Model model) {
 		
-		try {
-			ApiInitialisationService.clearPilotageAndDirectories(this.repertoire,
-					(String) getBacASable());
-		} catch (Exception e) {
-			e.printStackTrace();
-			this.getViewPilotageBAS().setMessage("Problème : " + e.getMessage());
-		}
-		ApiInitialisationService service = new ApiInitialisationService(TraitementPhase.INITIALISATION.toString(),
-				"arc.ihm", (String) getBacASable(), this.repertoire,
-				TraitementPhase.INITIALISATION.getNbLigneATraiter());
-		try {
-			service.resetEnvironnement();
-		} finally {
-			service.finaliser();
-		}
+		ApiService.resetBAS(getBacASable(), this.repertoire);
+
 		return generateDisplay(model, RESULT_SUCCESS);
 	}
 
@@ -593,30 +575,32 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 			String etat = ManipString.substringAfterLast(selectionColonne.get(0), "_").toUpperCase();
 
 			// get the file with the selected date_entree, state, and phase_tratement
-			 StringBuilder requete = new StringBuilder();
-	            requete.append("select container, id_source,id_norme,validite,periodicite,phase_traitement,array_to_string(etat_traitement,'_') as etat_traitement ,date_traitement, rapport, round(taux_ko*100,2) as taux_ko, nb_enr, to_delete, jointure ");
+				PreparedStatementBuilder requete = new PreparedStatementBuilder();
+	            requete.append("SELECT container, id_source,id_norme,validite,periodicite,phase_traitement,array_to_string(etat_traitement,'_') as etat_traitement ,date_traitement, rapport, round(taux_ko*100,2) as taux_ko, nb_enr, to_delete, jointure ");
 	            requete.append(" FROM "+getBddTable().getQualifedName(BddTable.ID_TABLE_PILOTAGE_FICHIER)+" ");
-	            requete.append(" where date_entree" + ManipString.sqlEqual(selectionLigne.get(ENTRY_DATE).get(0), "text"));
-	            requete.append(" and array_to_string(etat_traitement,'$')" + ManipString.sqlEqual(etat, "text"));
-	            requete.append(" and phase_traitement" + ManipString.sqlEqual(phase, "text"));
+	            requete.append(" WHERE date_entree" + requete.sqlEqual(selectionLigne.get(ENTRY_DATE).get(0), "text"));
+	            requete.append(" AND array_to_string(etat_traitement,'$')" + requete.sqlEqual(etat, "text"));
+	            requete.append(" AND phase_traitement" + requete.sqlEqual(phase, "text"));
 			
-			this.vObjectService.initialize(getViewFichierBAS(), requete.toString(), null, defaultInputFields);
+			this.vObjectService.initialize(getViewFichierBAS(), requete, null, defaultInputFields);
+			
 		} else if (!selectionLigneRapport.isEmpty()) {
 			HashMap<String, String> type = getViewRapportBAS().mapHeadersType();
 			HashMap<String, String> defaultInputFields = new HashMap<>();
 		
-            StringBuilder requete = new StringBuilder();
-            requete.append("select container, id_source,id_norme,validite,periodicite,phase_traitement,array_to_string(etat_traitement,'_') as etat_traitement ,date_traitement, rapport, round(taux_ko*100,2) as taux_ko, nb_enr, to_delete, jointure ");
-            requete.append(" from "+getBddTable().getQualifedName(BddTable.ID_TABLE_PILOTAGE_FICHIER)+" ");
-            requete.append(" where date_entree" + ManipString.sqlEqual(selectionLigneRapport.get(ENTRY_DATE).get(0), "text"));
-            requete.append(" and array_to_string(etat_traitement,'$')"
-                    + ManipString.sqlEqual(selectionLigneRapport.get("etat_traitement").get(0), type.get("etat_traitement")));
-            requete.append(" and phase_traitement"
-                    + ManipString.sqlEqual(selectionLigneRapport.get("phase_traitement").get(0), type.get("phase_traitement")));
-            requete.append(" and rapport" + ManipString.sqlEqual(selectionLigneRapport.get("rapport").get(0), type.get("rapport")));
+			PreparedStatementBuilder requete = new PreparedStatementBuilder();
+            requete.append("SELECT container, id_source,id_norme,validite,periodicite,phase_traitement,array_to_string(etat_traitement,'_') as etat_traitement ,date_traitement, rapport, round(taux_ko*100,2) as taux_ko, nb_enr, to_delete, jointure ");
+            requete.append(" FROM "+getBddTable().getQualifedName(BddTable.ID_TABLE_PILOTAGE_FICHIER)+" ");
+            requete.append(" WHERE date_entree" + requete.sqlEqual(selectionLigneRapport.get(ENTRY_DATE).get(0), "text"));
+            requete.append(" AND array_to_string(etat_traitement,'$')"
+                    + requete.sqlEqual(selectionLigneRapport.get("etat_traitement").get(0), type.get("etat_traitement")));
+            requete.append(" AND phase_traitement"
+                    + requete.sqlEqual(selectionLigneRapport.get("phase_traitement").get(0), type.get("phase_traitement")));
+            requete.append(" AND rapport" + requete.sqlEqual(selectionLigneRapport.get("rapport").get(0), type.get("rapport")));
 			
 
-			this.vObjectService.initialize(getViewFichierBAS(), requete.toString(), null, defaultInputFields);
+			this.vObjectService.initialize(getViewFichierBAS(), requete, null, defaultInputFields);
+			
 		} else {
 			this.vObjectService.destroy(getViewFichierBAS());
 		}
@@ -643,18 +627,18 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 		// récupération de la liste des id_source
 
 		Map<String, ArrayList<String>> selection = getViewFichierBAS().mapContentSelected();
-		StringBuilder querySelection = this.vObjectService.queryView(getViewFichierBAS());
+		PreparedStatementBuilder querySelection = this.vObjectService.queryView(getViewFichierBAS());
 		// si la selection de fichiers n'est pas vide, on se restreint aux fichiers
 		// sélectionner
 		//
 		if (!selection.isEmpty()) {
-			querySelection.append(" AND id_source IN " + Format.sqlListe(selection.get("id_source")) + " ");
+			querySelection.append(" AND id_source IN (" + querySelection.sqlListe(selection.get("id_source")) + ") ");
 		}
 
 		// optimisation pour avoir des bloc successifs sur la même archive
-		querySelection.append(" order by container ");
+		querySelection.append(" ORDER by container ");
 
-		this.vObjectService.downloadXML(getViewFichierBAS(), response, querySelection.toString(), this.repertoire,
+		this.vObjectService.downloadXML(getViewFichierBAS(), response, querySelection, this.repertoire,
 				(String) getBacASable(), TraitementPhase.RECEPTION.toString(),
 				TraitementEtat.OK.toString(), TraitementEtat.KO.toString());
 
@@ -668,7 +652,7 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 	 */
 	@RequestMapping("/toRestoreBAS")
 	public String toRestoreBAS(Model model) {		
-		return restore(model, "'R'", "Fichier(s) à rejouer");
+		return restore(model, "'R'", "managementSandbox.batch.replay.files");
 	}
 
 	/**
@@ -678,58 +662,41 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 	 */
 	@RequestMapping("/toRestoreArchiveBAS")
 	public String toRestoreArchiveBAS(Model model) {
-		return restore(model, "'RA'", "Archives(s) à rejouer");
+		return restore(model, "'RA'", "managementSandbox.batch.replay.archives");
 	}
 
 	private String restore(Model model, String code, String messageOk) {
 		loggerDispatcher.trace("*** Marquage de fichier à rejouer ***", LOGGER);
 		Map<String, ArrayList<String>> selection = getViewFichierBAS().mapContentSelected();
 	
-		// Récupération de la sélection de l'utilisateur
-		StringBuilder querySelection = new StringBuilder();
-		querySelection.append("select distinct container, id_source from (" + this.getViewFichierBAS().getMainQuery()
-				+ ") alias_de_table ");
-		querySelection.append(this.vObjectService.buildFilter(this.getViewFichierBAS().getFilterFields(),
-				this.getViewFichierBAS().getHeadersDLabel()));
-		// si la selection de fichiers n'est pas vide, on se restreint aux fichiers
-		// sélectionnés
-		if (!selection.isEmpty()) {
-			// concaténation des informations
-			ArrayList<String> infoConcatenee = new ArrayList<>();
-			ArrayList<String> listContainer = selection.get("container");
-			ArrayList<String> listIdSource = selection.get("id_source");
+		PreparedStatementBuilder querySelection = requestSelectToMark(selection);
 	
-			for (int i = 0; i < selection.get("id_source").size(); i++) {
-				infoConcatenee.add(listContainer.get(i) + "+" + listIdSource.get(i));
-			}
-			querySelection.append(" AND container||'+'||id_source IN " + Format.sqlListe(infoConcatenee) + " ");
-		}
-	
-		StringBuilder updateToDelete = requeteUpdateToDelete(querySelection, code);
+		PreparedStatementBuilder updateToDelete = requeteUpdateToMark(querySelection, code);
 		String message;
 		try {
 	
-			UtilitaireDao.get("arc").executeImmediate(null, updateToDelete);
+			UtilitaireDao.get("arc").executeRequest(null, updateToDelete);
 			message = messageOk;
 		} catch (SQLException e) {
 			loggerDispatcher
 					.info("Problème lors de la mise à jour de to_delete dans la table pilotage_fichier, requete :  "
 							+ updateToDelete, LOGGER);
 			e.printStackTrace();
-			message = "Problème lors de la restauration des fichiers";
+			message = "managementSandbox.batch.replay.error";
 		}
 	
 		// Attention bout de code spécifique aux bacs à sable, ne surtout pas copier en
 		// production
+		if (!isEnvProd()) {
 		// Lancement de l'initialisation dans la foulée
-		loggerDispatcher.info("Synchronisation de l'environnement  ", LOGGER);
-		ApiServiceFactory.getService(TraitementPhase.INITIALISATION.toString(), "arc.ihm",
-				getBacASable(), this.repertoire,
-				String.valueOf(TraitementPhase.INITIALISATION.getNbLigneATraiter())).invokeApi();
-		ApiServiceFactory.getService(TraitementPhase.RECEPTION.toString(), "arc.ihm",
-				getBacASable(), this.repertoire,
-				String.valueOf(TraitementPhase.RECEPTION.getNbLigneATraiter())).invokeApi();
-		// Fin du code spécifique aux bacs à sable
+			loggerDispatcher.info("Synchronisation de l'environnement  ", LOGGER);
+			ApiServiceFactory.getService(TraitementPhase.INITIALISATION.toString(), ApiService.IHM_SCHEMA,
+					getBacASable(), this.repertoire,
+					String.valueOf(TraitementPhase.INITIALISATION.getNbLigneATraiter())).invokeApi();
+			ApiServiceFactory.getService(TraitementPhase.RECEPTION.toString(), ApiService.IHM_SCHEMA,
+					getBacASable(), this.repertoire,
+					String.valueOf(TraitementPhase.RECEPTION.getNbLigneATraiter())).invokeApi();
+		}
 		this.getViewPilotageBAS().setMessage(message);
 	
 		return generateDisplay(model, RESULT_SUCCESS);
@@ -753,8 +720,9 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 		// mapping 1 sinon)
 		ArrayList<String> tableDownload = new ArrayList<>();
 		try {
-			GenericBean g = new GenericBean(UtilitaireDao.get("arc").executeRequest(null, ApiInitialisationService
-					.requeteListAllTablesEnv(getBacASable())));
+			GenericBean g = new GenericBean(UtilitaireDao.get("arc").executeRequest(null, 
+					ApiInitialisationService.requeteListAllTablesEnv(getBacASable())
+					));
 			if (!g.mapContent().isEmpty()) {
 				ArrayList<String> envTables = g.mapContent().get("table_name");
 				for (String table : envTables) {
@@ -774,24 +742,30 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 		}
 		
 		// List of queries that will be executed to download
-		List<String> tableauRequete=new ArrayList<>();
+		List<PreparedStatementBuilder> tableauRequete=new ArrayList<>();
 		// Name of the file containing the data download
 		List<String> fileNames = new ArrayList<>();
 
+		PreparedStatementBuilder requete;
 		
 		for (String t : tableDownload) {
+			
 			// Check if the table to download got children
-			if (Boolean.TRUE.equals(UtilitaireDao.get("arc").hasResults(null,
-					FormatSQL.getAllInheritedTables(ManipString.substringBeforeFirst(t, "."),
-							ManipString.substringAfterFirst(t, ".")) + " LIMIT 1"))) {
+			requete=new PreparedStatementBuilder();
+			requete.append(FormatSQL.getAllInheritedTables(ManipString.substringBeforeFirst(t, "."),
+					ManipString.substringAfterFirst(t, ".")));
+			requete.append(" LIMIT 1");
+			
+			
+			if (Boolean.TRUE.equals(UtilitaireDao.get("arc").hasResults(null,requete))) {
 
 				// Get the files to download
-				StringBuilder requete = new StringBuilder();
+				requete = new PreparedStatementBuilder();
 				requete.append(
-						"select id_source from " + getBddTable().getQualifedName(BddTable.ID_TABLE_PILOTAGE_FICHIER));
-				requete.append(" where phase_traitement='" + phase + "' ");
-				requete.append("AND etat_traitement='" + etatBdd + "' ");
-				requete.append("AND date_entree='" + date + "' ");
+						"SELECT id_source FROM " + getBddTable().getQualifedName(BddTable.ID_TABLE_PILOTAGE_FICHIER));
+				requete.append("\n WHERE phase_traitement=" + requete.quoteText(phase) + " ");
+				requete.append("\n AND etat_traitement=" + requete.quoteText(etatBdd) + "::text[] ");
+				requete.append("\n AND date_entree=" + requete.quoteText(date) + " ");
 
 				// Si des fichiers ont été selectionnés, on ajoute a la requete la liste des
 				// fichiers
@@ -812,7 +786,7 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 
 				// for each files, generate the download query
 				for (String idSource : idSources) {
-					tableauRequete.add("SELECT * FROM " + ApiService.tableOfIdSource(t, idSource));
+					tableauRequete.add(new PreparedStatementBuilder("SELECT * FROM " + ApiService.tableOfIdSource(t, idSource)));
 					fileNames.add(t + "_" + idSource);
 				}
 
@@ -820,30 +794,24 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 			// if no children
 			else {
 				
-				StringBuilder requete = new StringBuilder();
-				requete.append("with prep as ( ");
-				requete.append("select id_source from "
+				requete = new PreparedStatementBuilder();
+				requete.append("WITH prep as ( ");
+				requete.append("SELECT id_source FROM "
 						+ getBddTable().getQualifedName(BddTable.ID_TABLE_PILOTAGE_FICHIER));
-				requete.append(" where phase_traitement='" + phase + "' ");
-				requete.append("AND etat_traitement='" + etatBdd + "' ");
-				requete.append("AND date_entree='" + date + "' ");
+				requete.append("\n WHERE phase_traitement=" + requete.quoteText(phase) + " ");
+				requete.append("\n AND etat_traitement=" + requete.quoteText(etatBdd) + "::text[] ");
+				requete.append("\n AND date_entree=" + requete.quoteText(date) + " ");
 
 				// Si des fichiers ont été selectionnés, on ajoute a la requete la liste des
 				// fichiers
 				if (!getViewFichierBAS().mapContentSelected().isEmpty()) {
-					ArrayList<String> filesSelected = getViewFichierBAS().mapContentSelected().get("id_source");
-					requete.append("AND id_source IN (");
-					for (int i = 0; i < filesSelected.size(); i++) {
-						if (i > 0) {
-							requete.append(",");
-						}
-						requete.append("'" + filesSelected.get(i) + "'");
-					}
+					requete.append("\n AND id_source IN (");
+					requete.append(requete.sqlListe(getViewFichierBAS().mapContentSelected().get("id_source")));
 					requete.append(")");
 				}
 				requete.append(" ) ");
 				requete.append("\n SELECT * from " + t + " a where exists (select 1 from prep b where a.id_source=b.id_source) ");
-				tableauRequete.add(requete.toString());
+				tableauRequete.add(requete);
 				fileNames.add(t);
 			}
 
@@ -861,14 +829,16 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 		
 		initializeFichierBAS();
 		
-		StringBuilder querySelection = new StringBuilder();
-		querySelection.append("select distinct alias_de_table.container as nom_fichier from ("
-				+ this.getViewFichierBAS().getMainQuery() + ") alias_de_table ");
+		PreparedStatementBuilder querySelection = new PreparedStatementBuilder();
+	
+		querySelection.append("select distinct alias_de_table.container as nom_fichier from (");
+		querySelection.append(this.getViewFichierBAS().getMainQuery());
+		querySelection.append(") alias_de_table ");
 		querySelection.append(this.vObjectService.buildFilter(this.getViewFichierBAS().getFilterFields(),
 				this.getViewFichierBAS().getHeadersDLabel()));
 
 		if (!selection.isEmpty()) {
-			querySelection.append(" AND container IN " + Format.sqlListe(selection.get("container")) + " ");
+			querySelection.append(" AND container IN (" + querySelection.sqlListe(selection.get("container")) + ") ");
 		}
 
 		loggerDispatcher.info("Ma requete pour récupérer la liste des enveloppes : " + querySelection.toString(),
@@ -878,7 +848,7 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 		listRepertoire.add(TraitementPhase.RECEPTION + "_" + TraitementEtat.OK);
 		listRepertoire.add(TraitementPhase.RECEPTION + "_" + TraitementEtat.KO);
 		String chemin = Paths.get(this.repertoire, getBacASable().toUpperCase()).toString();
-		this.vObjectService.downloadEnveloppe(getViewFichierBAS(), response, querySelection.toString(), chemin, listRepertoire);
+		this.vObjectService.downloadEnveloppe(getViewFichierBAS(), response, querySelection, chemin, listRepertoire);
 		loggerDispatcher.trace("*** Fin du téléchargement des enveloppes ***", LOGGER);
 
 		return "none";
@@ -895,47 +865,30 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 		loggerDispatcher.trace("*** Marquage de fichier à supprimer ***", LOGGER);
 		Map<String, ArrayList<String>> selection = getViewFichierBAS().mapContentSelected();
 
-		// Récupération de la sélection de l'utilisateur
-		StringBuilder querySelection = new StringBuilder();
-		querySelection.append("select distinct container, id_source from (" + this.getViewFichierBAS().getMainQuery()
-				+ ") alias_de_table ");
-		querySelection.append(this.vObjectService.buildFilter(this.getViewFichierBAS().getFilterFields(),
-				this.getViewFichierBAS().getHeadersDLabel()));
-		// si la selection de fichiers n'est pas vide, on se restreint aux fichiers
-		// sélectionné
-		if (!selection.isEmpty()) {
-			// concaténation des informations
-			ArrayList<String> infoConcatenee = new ArrayList<>();
-			ArrayList<String> listContainer = selection.get("container");
-			ArrayList<String> listIdSource = selection.get("id_source");
+		PreparedStatementBuilder querySelection = requestSelectToMark(selection);
 
-			for (int i = 0; i < selection.get("id_source").size(); i++) {
-				infoConcatenee.add(listContainer.get(i) + "+" + listIdSource.get(i));
-			}
-			querySelection.append(" AND container||'+'||id_source IN " + Format.sqlListe(infoConcatenee) + " ");
-		}
-
-		StringBuilder updateToDelete = requeteUpdateToDelete(querySelection, "'1'");
+		PreparedStatementBuilder updateToDelete = requeteUpdateToMark(querySelection, "'1'");
 		String message;
 		try {
-			UtilitaireDao.get("arc").executeImmediate(null, updateToDelete);
-			message = "Fichier(s) supprimé(s)";
+			UtilitaireDao.get("arc").executeRequest(null, updateToDelete);
+			message = "managementSandbox.batch.delete.ok";
 		} catch (SQLException e) {
 			loggerDispatcher
 					.info("Problème lors de la mise à jour de to_delete dans la table pilotage_fichier, requete :  "
 							+ updateToDelete, LOGGER);
 			e.printStackTrace();
-			message = "Problème lors de la suppression des fichiers";
+			message = "managementSandbox.batch.delete.error";
 		}
 
 		// Attention bout de code spécifique aux bacs à sable, ne surtout pas copier en
 		// production
-		loggerDispatcher.info("Synchronisation de l'environnement  ", LOGGER);
-		ApiServiceFactory.getService(TraitementPhase.INITIALISATION.toString(), "arc.ihm",
-				getBacASable(), this.repertoire,
-				String.valueOf(TraitementPhase.INITIALISATION.getNbLigneATraiter())).invokeApi();
+		if (!isEnvProd()) {
+			loggerDispatcher.info("Synchronisation de l'environnement  ", LOGGER);
+			ApiServiceFactory.getService(TraitementPhase.INITIALISATION.toString(), ApiService.IHM_SCHEMA,
+					getBacASable(), this.repertoire,
+					String.valueOf(TraitementPhase.INITIALISATION.getNbLigneATraiter())).invokeApi();
+		}
 
-		// Fin du code spécifique aux bacs à sable
 		this.getViewPilotageBAS().setMessage(message);
 
 		return generateDisplay(model, RESULT_SUCCESS);
@@ -952,10 +905,26 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 		
 		loggerDispatcher.trace("*** Suppression du marquage de fichier à supprimer ***", LOGGER);
 		Map<String, ArrayList<String>> selection = getViewFichierBAS().mapContentSelected();
-		// Récupération de la sélection de l'utilisateur
-		StringBuilder querySelection = new StringBuilder();
-		querySelection.append("select distinct container, id_source from (" + this.getViewFichierBAS().getMainQuery()
-				+ ") alias_de_table ");
+		PreparedStatementBuilder querySelection = requestSelectToMark(selection);
+		PreparedStatementBuilder updateToDelete = requeteUpdateToMark(querySelection, "null");
+		try {
+
+			UtilitaireDao.get("arc").executeRequest(null, updateToDelete);
+		} catch (SQLException e) {
+			loggerDispatcher
+					.info("Problème lors de la mise à jour de to_delete dans la table pilotage_fichier, requete :  "
+							+ updateToDelete, LOGGER);
+			e.printStackTrace();
+		}
+		return generateDisplay(model, RESULT_SUCCESS);
+	}
+
+	/** Prepare a request selecting the line to change when marking files for deletion/replay.*/
+	private PreparedStatementBuilder requestSelectToMark(Map<String, ArrayList<String>> selection) {
+		PreparedStatementBuilder querySelection = new PreparedStatementBuilder();
+		querySelection.append("select distinct container, id_source from (");
+		querySelection.append(this.getViewFichierBAS().getMainQuery());
+		querySelection.append(") alias_de_table ");
 		querySelection.append(this.vObjectService.buildFilter(this.getViewFichierBAS().getFilterFields(),
 				this.getViewFichierBAS().getHeadersDLabel()));
 		// si la selection de fichiers n'est pas vide, on se restreint aux fichiers
@@ -971,29 +940,18 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 			}
 			querySelection.append(" AND container||'+'||id_source IN " + Format.sqlListe(infoConcatenee) + " ");
 		}
-		// loggerDispatcher.info("Ma requete de selection : " + querySelection, logger);
-
-		StringBuilder updateToDelete = requeteUpdateToDelete(querySelection, "null");
-		try {
-
-			UtilitaireDao.get("arc").executeImmediate(null, updateToDelete);
-		} catch (SQLException e) {
-			loggerDispatcher
-					.info("Problème lors de la mise à jour de to_delete dans la table pilotage_fichier, requete :  "
-							+ updateToDelete, LOGGER);
-			e.printStackTrace();
-		}
-		return generateDisplay(model, RESULT_SUCCESS);
+		return querySelection;
 	}
 
-	private StringBuilder requeteUpdateToDelete(StringBuilder querySelection, String valeur) {
-		StringBuilder updateToDelete = new StringBuilder();
+	/** Mark the line selected by querySelection for deletion/replay (depending on value).*/
+	private PreparedStatementBuilder requeteUpdateToMark(PreparedStatementBuilder querySelection, String value) {
+		PreparedStatementBuilder updateToDelete = new PreparedStatementBuilder();
 		updateToDelete.append("WITH ");
 		updateToDelete.append("prep AS ( ");
 		updateToDelete.append(querySelection);
 		updateToDelete.append("         ) ");
 		updateToDelete.append("UPDATE " + getBddTable().getQualifedName(BddTable.ID_TABLE_PILOTAGE_FICHIER) + " a ");
-		updateToDelete.append("SET to_delete=" + valeur + " ");
+		updateToDelete.append("SET to_delete=" + value + " ");
 		updateToDelete.append(
 				"WHERE EXISTS (SELECT 1 FROM prep WHERE a.container=prep.container AND a.id_source=prep.id_source); ");
 		return updateToDelete;
@@ -1007,13 +965,13 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 	@RequestMapping("/resetPhaseBAS")
 	public String resetPhaseBAS(Model model) {
 		Map<String, ArrayList<String>> selection = getViewFichierBAS().mapContentSelected();
-		StringBuilder querySelection = this.vObjectService.queryView(getViewFichierBAS());
+		PreparedStatementBuilder querySelection = this.vObjectService.queryView(getViewFichierBAS());
 
 		// si la selection de fichiers n'est pas vide, on se restreint aux fichiers
 		// choisis pour le retour arriere
 		//
 		if (!selection.isEmpty()) {
-			querySelection.append(" AND id_source IN " + Format.sqlListe(selection.get("id_source")) + " ");
+			querySelection.append(" AND id_source IN " + querySelection.sqlListe(selection.get("id_source")) + " ");
 		}
 
 		// On recupere la phase
@@ -1021,10 +979,10 @@ public class PilotageBASAction extends ArcAction<EnvManagementModel> {
 
 		// Lancement du retour arrière
 		ApiInitialisationService serv = new ApiInitialisationService(TraitementPhase.INITIALISATION.toString(),
-				"arc.ihm", getBacASable(), this.repertoire,
+				ApiService.IHM_SCHEMA, getBacASable(), this.repertoire,
 				TraitementPhase.INITIALISATION.getNbLigneATraiter());
 		try {
-			serv.retourPhasePrecedente(TraitementPhase.valueOf(phase), querySelection.toString(), null);
+			serv.retourPhasePrecedente(TraitementPhase.valueOf(phase), querySelection, null);
 		} finally {
 			serv.finaliser();
 		}

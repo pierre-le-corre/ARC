@@ -12,6 +12,7 @@ import org.apache.logging.log4j.Logger;
 import org.springframework.stereotype.Component;
 
 import fr.insee.arc.core.model.TraitementEtat;
+import fr.insee.arc.core.model.TraitementPhase;
 import fr.insee.arc.core.service.thread.ThreadChargementService;
 import fr.insee.arc.core.util.BDParameters;
 import fr.insee.arc.core.util.Norme;
@@ -58,18 +59,15 @@ public class ApiChargementService extends ApiService {
     protected String fileName;
 
     protected List<Norme> listeNorme;
-    private int currentIndice;
 
     private HashMap<String, ArrayList<String>> listIdsource;
 
     public ApiChargementService(String aCurrentPhase, String anParametersEnvironment, String aEnvExecution, String aDirectoryRoot, Integer aNbEnr,
             String... paramBatch) {
         super(aCurrentPhase, anParametersEnvironment, aEnvExecution, aDirectoryRoot, aNbEnr, paramBatch);
-
-        this.directoryIn = Paths.get(
-        		this.getDirectoryRoot(), 
-        		aEnvExecution.toUpperCase().replace(".", "_"),
-        		previousPhase + "_" + TraitementEtat.OK).toString() + File.separator;
+        
+        this.directoryIn = ApiService.directoryPhaseEtatOK(this.getDirectoryRoot(), aEnvExecution, TraitementPhase.valueOf(previousPhase)) + File.separator;
+        
         
         // Noms des table temporaires utiles au chargement
         // nom court pour les perfs
@@ -92,13 +90,9 @@ public class ApiChargementService extends ApiService {
     public void executer() throws Exception {
         StaticLoggerDispatcher.info("** executer **", LOGGER);
         
-        this.MAX_PARALLEL_WORKERS = BDParameters.getInt(this.connexion, "ApiChargementService.MAX_PARALLEL_WORKERS",4);
+        this.maxParallelWorkers = BDParameters.getInt(this.connexion, "ApiChargementService.MAX_PARALLEL_WORKERS",4);
         
         long dateDebut = java.lang.System.currentTimeMillis() ;
-
-        // maintenance tables : on efface les enregistrement arrivé en mapping ok
-        // effacerApresMappingOk(TraitementPhase.MAPPING,
-        // TraitementPhase.CHARGEMENT,TraitementPhase.CONTROLE,TraitementPhase.FILTRAGE);
 
         // Récupérer la liste des fichiers selectionnés
         StaticLoggerDispatcher.info("Récupérer la liste des fichiers selectionnés", LOGGER);
@@ -108,9 +102,9 @@ public class ApiChargementService extends ApiService {
         int nbFichier = getListIdsource().get(ID_SOURCE).size();
         
         Connection chargementThread = null;
-        ArrayList<ThreadChargementService> threadList = new ArrayList<ThreadChargementService>();
-        ArrayList<Connection> connexionList = ApiService.prepareThreads(MAX_PARALLEL_WORKERS, null, this.envExecution);
-        currentIndice = 0;
+        ArrayList<ThreadChargementService> threadList = new ArrayList<>();
+        ArrayList<Connection> connexionList = ApiService.prepareThreads(maxParallelWorkers, null, this.envExecution, properties.getDatabaseRestrictedUsername());
+        int currentIndice = 0;
 
         StaticLoggerDispatcher.info("** Generation des threads pour le chargement **", LOGGER);
 
@@ -126,7 +120,7 @@ public class ApiChargementService extends ApiService {
             
             threadList.add(r);
             r.start();
-            waitForThreads2(MAX_PARALLEL_WORKERS, threadList, connexionList);
+            waitForThreads2(maxParallelWorkers, threadList, connexionList);
 
         }
 
@@ -201,4 +195,5 @@ public class ApiChargementService extends ApiService {
     public void setTableTempA(String tableTempA) {
         this.tableTempA = tableTempA;
     }
+    
 }

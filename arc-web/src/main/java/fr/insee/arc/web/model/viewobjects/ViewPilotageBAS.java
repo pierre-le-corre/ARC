@@ -17,7 +17,7 @@ public class ViewPilotageBAS extends VObject {
     	this.setTitle("view.envManagement");
     	this.setSessionName("viewPilotageBAS");
     	
-    	this.setPaginationSize(5);
+    	this.setDefaultPaginationSize(5);
     	
         
         this.setConstantVObject(new ConstantVObject(new HashMap<String, ColumnRendering>() {
@@ -28,7 +28,7 @@ public class ViewPilotageBAS extends VObject {
             private static final long serialVersionUID = 3294598955186326004L;
 
             {
-                put("date_entree", new ColumnRendering(true, "label.date.entry", "/***/", "text", null, true));
+                put("date_entree", new ColumnRendering(true, "label.date.entry", "10%", "text", null, true));
             }
         }
 

@@ -1,5 +1,6 @@
 package fr.insee.arc.core.ArchiveLoader;
 
+import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -13,6 +14,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import fr.insee.arc.utils.utils.ManipString;
+import fr.insee.arc.core.service.ApiReceptionService;
 import fr.insee.arc.core.util.StaticLoggerDispatcher;
 
 /**
@@ -27,13 +29,10 @@ public class TarGzDecompressor implements ArchiveExtractor {
     @Override
     public void extract(File archiveFile) throws Exception {
 	StaticLoggerDispatcher.info("decompress()" + archiveFile.getName(), LOGGER);
-	FileInputStream archiveInputStream = null;
-
-	archiveInputStream = new FileInputStream(archiveFile);
 	File dir = new File(archiveFile + ".dir");
 
 	
-	try (GzipCompressorInputStream gzipIn = new GzipCompressorInputStream(archiveInputStream);
+	try (GzipCompressorInputStream gzipIn = new GzipCompressorInputStream(new BufferedInputStream(new FileInputStream(archiveFile),ApiReceptionService.READ_BUFFER_SIZE));
 			TarArchiveInputStream tarIn = new TarArchiveInputStream(gzipIn)) {
 	    TarArchiveEntry entry;
 

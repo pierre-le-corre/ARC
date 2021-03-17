@@ -3,6 +3,7 @@ package fr.insee.arc.core.service.engine.normage;
 import java.sql.Connection;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -10,12 +11,15 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import fr.insee.arc.core.service.handler.XMLComplexeHandlerCharger;
 import fr.insee.arc.core.service.thread.ThreadNormageService;
+import fr.insee.arc.utils.dao.PreparedStatementBuilder;
 import fr.insee.arc.utils.dao.UtilitaireDao;
+import fr.insee.arc.utils.utils.FormatSQL;
 import fr.insee.arc.utils.utils.ManipString;
 import fr.insee.arc.core.util.StaticLoggerDispatcher;
 
@@ -93,7 +97,6 @@ public class NormageEngine {
 		String periodicite = pilotageIdSource.get("periodicite").get(0);
 		String validiteText = pilotageIdSource.get("validite").get(0);
 
-		StringBuilder bloc3 = new StringBuilder();
 
 		if (jointure == null || jointure.equals("")) {
 
@@ -137,10 +140,14 @@ public class NormageEngine {
 				}
 			}
 
+			StringBuilder bloc3 = new StringBuilder();
 			bloc3.append("\n CREATE TEMPORARY TABLE " + tableDestination + " ");
 			bloc3.append("\n  AS SELECT ");
 			bloc3.append(reqSelect);
 			bloc3.append(" from " + tableSource + " ;");
+			
+			UtilitaireDao.get("arc").executeImmediate(connection, bloc3);
+
 
 		} else {
 			
@@ -199,25 +206,15 @@ public class NormageEngine {
 				// retravaille de la requete pour éliminer UNION ALL
 				subJoin = optimisation96(subJoin,subJoinNumber);
 	
-				// on ne fait le remplacement que maintenant (passage en minuscule avant pour le
-				// parsing)
-	//		            subJoin="DISCARD TEMP;\n"+subJoin;
-				subJoin = "set enable_nestloop=off;\n" + subJoin;
-				subJoin = subJoin.replace("{table_source}", tableSource);
-				subJoin = subJoin.replace("{table_destination}", tableDestination);
-				subJoin = subJoin.replace("{id_norme}", norme);
-				subJoin = subJoin.replace("{validite}", validiteText);
-				subJoin = subJoin.replace("{periodicite}", periodicite);
-				subJoin = subJoin.replace("{nom_fichier}", id_source);
-				subJoin = subJoin + "set enable_nestloop=on;\n ";
-				bloc3.append(subJoin);
-	
+				subJoin = appliquerRegleReduction(regle, norme, validite, periodicite, subJoin);
+				
+				
+				executerJointure(regle, norme, validite, periodicite, subJoin, validiteText, id_source);
+
 				subJoinNumber++;
 
 			}
 		}
-		UtilitaireDao.get("arc").executeImmediate(connection, bloc3);
-		bloc3.setLength(0);
 
 	}
 
@@ -1159,6 +1156,9 @@ public class NormageEngine {
 
 					}
 
+					// keep the record id r for partition ruels if needed
+					blocCreateNew.append(", "+table.get(rubrique.get(0)) + "$.r as r ");
+					
 					blocCreateNew.append("from ");
 
 					// bloc from
@@ -1511,6 +1511,270 @@ public class NormageEngine {
 		return returned;
 
 	}
+	
+	/**
+	 * Rules to reduce the cartesian products
+	 * For a given set, the method builds a new set
+	 * with the only constraint of containing all values for any of the column of the set
+	 */
+	private String appliquerRegleReduction(HashMap<String, ArrayList<String>> regle, String norme, Date validite,
+			String periodicite, String jointure) throws Exception {
+		
+		for (int j = 0; j < regle.get("id_regle").size(); j++) {
+			String type = regle.get("id_classe").get(j);
+			if (type.equals("reduction")) {
+
+				String[] rubriques = regle.get("rubrique").get(j).toLowerCase().split(",");
+				List<String> rubriquesUtiles=new ArrayList<String>();
+				List<String> rubriquesNull=new ArrayList<String>();
+
+				
+				// extraction de la clause select
+				String[] bloc=jointure.split("\n insert into \\{table_destination\\} ");
+				
+				String rubriquesDuSelect=ManipString.substringBeforeFirst(ManipString.substringAfterFirst(bloc[1],"select "),"\n from ")+",";
+
+				// regarder si les rubrique de la regles sont présentes
+				for (String r:rubriques)
+				{
+					if (rubriquesDuSelect.contains(",i_"+r+","))
+					{
+						rubriquesUtiles.add("i_"+r);
+						rubriquesNull.add("null");
+					}
+					if (rubriquesDuSelect.contains(",m_"+r+","))
+					{
+						rubriquesUtiles.add("m_"+r);
+						rubriquesNull.add("null");
+					}
+				}
+				
+				// si - de 3 rubriques présentes, on ne fait rien
+				if (rubriquesUtiles.size()<3)
+				{
+					return jointure;
+				}
+				
+				String rubriquesUtilesSelect = StringUtils.join(rubriquesUtiles,",");
+				
+				
+				// on initialise la requete avec le bloc 0 (bloc de préparation, calcul des tables temporaires, etc.)
+				StringBuilder requete=new StringBuilder(bloc[0]);
+
+				// nom de bases des vues dans l'enchainement de clause with qu'on va générer
+				String withBaseName="v";
+				
+				
+				// pour chaque bloc d'insert, on réécrit la requete
+				for (int i=1;i<bloc.length;i++)
+				{
+					requete.append("\n insert into {table_destination} ");
+					// récupération des colonnes de l'insert
+					requete.append(ManipString.substringBeforeFirst(bloc[i],"\n select "));
+
+					
+					String blocSelect = ManipString.substringBeforeFirst(ManipString.substringAfterFirst(bloc[i],"\n select "),"\n from ");
+					String blocFrom = ManipString.substringBeforeLast(ManipString.substringAfterFirst(bloc[i],"\n from "),"\n;");
+					
+					// on matérialise les n-uplets distincts
+					requete.append("\n with "+withBaseName+0+" as ( ");
+					requete.append("\n select distinct "+rubriquesUtilesSelect+" ");
+					requete.append("\n from ");
+					requete.append(blocFrom);
+					requete.append("\n ) ");
+					
+					// on itére sur les rubriques utiles
+					for (int k=0;k<rubriquesUtiles.size();k++)
+					{
+						requete.append("\n , "+withBaseName+(k+1)+" as ( ");
+						
+						// on ajoute à la table générée avant
+						if (k>0)
+						{
+							requete.append("\n select * from "+withBaseName+k+" UNION ALL ");
+
+						}
+						
+						// les n uplet distinct sur la rubrique en cours
+						requete.append("\n select distinct on ("+rubriquesUtiles.get(k)+") * from "+withBaseName+0+" u ");
+						// dont on a pas déjà la valeur
+						if (k>0)
+						{
+							requete.append("\n where not exists (select from "+withBaseName+k+" v where u."+rubriquesUtiles.get(k)+"=v."+rubriquesUtiles.get(k)+") ");
+						}
+						// ajouter le n-uplet null, null, null
+						if (k==(rubriquesUtiles.size()-1))
+						{
+							requete.append("\n UNION ALL select "+ StringUtils.join(rubriquesNull,",")+" ");
+						}
+						
+						requete.append("\n ) ");
+					}
+					requete.append("\n select ");
+					requete.append(blocSelect);
+					requete.append("\n from ");
+					requete.append(blocFrom);
+					requete.append("\n and row("+rubriquesUtilesSelect+")::text in (select row("+rubriquesUtilesSelect+")::text from "+withBaseName+rubriquesUtiles.size()+") ");
+					requete.append("\n;");
+					
+				}
+
+				// 1 seule regle de reduction prise en compte pour le moment 
+				return requete.toString();
+			}
+		}
+		
+		return jointure;
+	}
+	
+	/**
+	 * execute query with partition if needed
+	 * @param regle
+	 * @param norme
+	 * @param validite
+	 * @param periodicite
+	 * @param jointure
+	 * @param validiteText
+	 * @param id_source
+	 * @return
+	 * @throws Exception
+	 */
+	private void executerJointure(HashMap<String, ArrayList<String>> regle, String norme, Date validite,
+			String periodicite, String jointure, String validiteText, String id_source) throws Exception {
+
+		// only first partition rule is processed
+		for (int j = 0; j < regle.get("id_regle").size(); j++) {
+			String type = regle.get("id_classe").get(j);
+			if (type.equals("partition")) {
+
+				String element = regle.get("rubrique").get(j);
+				int minSize = Integer.parseInt(regle.get("rubrique_nmcl").get(j).split(",")[0]);
+				int chunkSize = Integer.parseInt(regle.get("rubrique_nmcl").get(j).split(",")[1]);
+				executerJointureWithPartition(regle, norme, validite, periodicite, jointure, validiteText, id_source,
+						element, minSize, chunkSize);
+				return;
+			}
+		}
+
+		// No partition found; normal execution
+		UtilitaireDao.get("arc").executeImmediate(connection,
+				"set enable_nestloop=off;\n"
+				+ replaceQueryParameters(jointure, norme, validite, periodicite, jointure, validiteText, id_source)
+				+ "set enable_nestloop=on;\n"
+				);
+
+	}
+	
+	
+	/**
+	 * execute the query through the partition rubrique @element
+	 * if their is enough records @minSize
+	 * the query is executed by part, the number max of records is set by @chunkSize
+	 * @param regle
+	 * @param norme
+	 * @param validite
+	 * @param periodicite
+	 * @param jointure
+	 * @param validiteText
+	 * @param id_source
+	 * @param element
+	 * @param minSize
+	 * @param chunkSize
+	 * @throws Exception
+	 */
+	private void executerJointureWithPartition(HashMap<String, ArrayList<String>> regle, String norme, Date validite,
+			String periodicite, String jointure, String validiteText, String id_source, String element, int minSize, int chunkSize) throws Exception {
+	/* get the query blocks */
+	String blocCreate=ManipString.substringBeforeFirst(jointure, "\n insert into {table_destination} ");
+	String blocInsert="\n insert into {table_destination} " +ManipString.substringAfterFirst(jointure, "\n insert into {table_destination} ");
+	
+	// rework create block to get the number of record in partition if the rubrique is found
+	
+	// watch out the independance rules which can put the partition rubrique in another table than t_rubrique
+	String partitionTableName="";
+	String partitionIdentifier=" m_"+element+" ";
+	
+	if (blocCreate.contains(partitionIdentifier))
+	{
+		// get the tablename
+		partitionTableName=
+				ManipString.substringBeforeFirst(
+						ManipString.substringAfterLast(
+								ManipString.substringBeforeLast(blocCreate, partitionIdentifier)
+						,"create temporary table ")
+					," as ");
+		
+		// if independance rule used for the element ($ sign), then use record id "r" as partition key
+		if (blocCreate.contains(" t_"+element+"$ "))
+		{
+			partitionIdentifier="r";
+		}
+		
+		blocCreate=blocCreate+"select max("+partitionIdentifier+") from "+partitionTableName;
+	}
+	else
+	{
+		blocCreate=blocCreate+"select 0";
+	}
+	
+	blocCreate=replaceQueryParameters(blocCreate, norme, validite, periodicite, jointure, validiteText, id_source);
+	blocInsert=replaceQueryParameters(blocInsert, norme, validite, periodicite, jointure, validiteText, id_source);
+
+	int total=UtilitaireDao.get("arc").getInt(connection, new PreparedStatementBuilder(blocCreate));
+	
+	// partition if and only if enough records
+	if (total>=minSize)
+	{	
+		String partitionTableNameWithAllRecords="all_"+partitionTableName;
+
+		// rename the table to split
+		StringBuilder bloc3=new StringBuilder("alter table "+partitionTableName+" rename to "+partitionTableNameWithAllRecords+";");
+		UtilitaireDao.get("arc").executeImmediate(connection,bloc3);
+		
+		PreparedStatementBuilder bloc4=new PreparedStatementBuilder();
+		bloc4.append("\n set enable_nestloop=off;\n");
+		bloc4.append("\n drop table if exists "+partitionTableName+";");
+		bloc4.append("\n create temporary table "+partitionTableName+" as select * from "+partitionTableNameWithAllRecords+" where "+partitionIdentifier+">=?::int and "+partitionIdentifier+"<?::int;");
+		bloc4.append(blocInsert);
+		bloc4.append("\n set enable_nestloop=on;\n");
+
+		
+		// iterate through chunks
+		int iterate=1;
+		do {
+			
+			bloc4.setParameters(Arrays.asList(""+(iterate),""+(iterate+chunkSize)));	
+
+			UtilitaireDao.get("arc").executeRequest(connection, bloc4);
+
+			iterate=iterate+chunkSize;
+			
+		} while (iterate<=total);
+
+	}
+	else
+	{
+		StringBuilder bloc3=new StringBuilder();
+		
+		bloc3.append("\n set enable_nestloop=off;\n");
+		bloc3.append(blocInsert);
+		bloc3.append("\n set enable_nestloop=on;\n");
+		
+		UtilitaireDao.get("arc").executeImmediate(connection,bloc3);
+	}
+	}
+	
+	private String replaceQueryParameters(String query, String norme, Date validite,String periodicite, String jointure, String validiteText, String id_source)
+	{
+		return query.toString()
+				.replace("{table_source}", tableSource)
+				.replace("{table_destination}", tableDestination)
+				.replace("{id_norme}", norme)
+				.replace("{validite}", validiteText)
+				.replace("{periodicite}", periodicite)
+				.replace("{nom_fichier}", id_source);
+	}
+	
 
 	/**
 	 * determine le pere d'une rubrique "m_<***>" dans un bloc

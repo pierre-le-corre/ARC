@@ -1,5 +1,6 @@
 package fr.insee.arc.core.service;
 
+import java.io.File;
 import java.math.BigInteger;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -8,6 +9,7 @@ import java.sql.SQLException;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -17,7 +19,6 @@ import org.apache.commons.lang3.time.DateUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Configurable;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
@@ -31,6 +32,7 @@ import fr.insee.arc.core.model.TraitementTableParametre;
 import fr.insee.arc.core.util.BDParameters;
 import fr.insee.arc.core.util.LoggerDispatcher;
 import fr.insee.arc.core.util.StaticLoggerDispatcher;
+import fr.insee.arc.utils.dao.PreparedStatementBuilder;
 import fr.insee.arc.utils.dao.UtilitaireDao;
 import fr.insee.arc.utils.ressourceUtils.PropertiesHandler;
 import fr.insee.arc.utils.ressourceUtils.SpringApplicationContext;
@@ -44,11 +46,13 @@ import fr.insee.arc.utils.utils.ManipString;
 @Component
 public abstract class ApiService implements IDbConstant, IConstanteNumerique {
 
-    protected static final Logger LOGGER = LogManager.getLogger(ApiService.class);
+    protected static final Logger LOGGER_APISERVICE = LogManager.getLogger(ApiService.class);
 
     public static final String SUFFIXE_TEMP_FILE_ORIADE = "_W";
     public static final String FICHIER_MISE_EN_PRODUCTION = "production.dummy";
-    public int MAX_PARALLEL_WORKERS;
+    
+    protected int maxParallelWorkers;
+    
     public static final String CHILD_TABLE_TOKEN="child";
 
     // Nom du fichier
@@ -56,6 +60,9 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
     // racine xml
     public static final String ROOT="root";
 
+    // anti-spam delay when thread chain error
+    protected static final int PREVENT_ERROR_SPAM_DELAY=100;
+    
     @Autowired
 	protected PropertiesHandler properties;
 
@@ -90,6 +97,7 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
 
     protected String bdDateFormat="DD/MM/YYYY H24:MI:SS";
 
+    public final static String IHM_SCHEMA="arc.ihm";
     
     protected String idSource;
 
@@ -101,8 +109,8 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
     public Exception error = null;
     public Thread t = null;
     
-    public static ArrayList<Connection> prepareThreads(int parallel, Connection connexion, String anEnvExecution) {
-        ArrayList<Connection> connexionList = new ArrayList<Connection>();
+    public static ArrayList<Connection> prepareThreads(int parallel, Connection connexion, String anEnvExecution, String restrictedUsername) {
+        ArrayList<Connection> connexionList = new ArrayList<>();
 		try {
 			if (connexion != null) {
 				connexionList.add(connexion);
@@ -115,11 +123,13 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
 				Connection connexionTemp = UtilitaireDao.get(poolName).getDriverConnexion();
 				connexionList.add(connexionTemp);
 
-				UtilitaireDao.get("arc").executeImmediate(connexionTemp, configConnection(anEnvExecution));
+				// demote application user account to temporary restricted operations and readonly or non-tempoary schema
+				UtilitaireDao.get("arc").executeImmediate(connexionTemp, configConnection(anEnvExecution)+ 
+						(restrictedUsername.equals("")?"":FormatSQL.changeRole(restrictedUsername)));
 			}
 
 		} catch (Exception ex) {
-			 LoggerHelper.error(LOGGER,ApiService.class, "prepareThreads()", ex);
+			 LoggerHelper.error(LOGGER_APISERVICE,ApiService.class, "prepareThreads()", ex);
         }
         return connexionList;
 
@@ -127,17 +137,16 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
 
 
     public  void waitForThreads2(int parallel, ArrayList<? extends ApiService> threadList, ArrayList<Connection> connexionList)
-            throws Exception {
+            throws SQLException {
         
-//        System.out.println("threadList.size() "+threadList.size());
-        while (threadList.size() >= parallel && threadList.size() > 0) {
+        while (threadList.size() >= parallel && !threadList.isEmpty()) {
             Iterator<? extends ApiService> it = threadList.iterator();
             
             while (it.hasNext()) {
                 ApiService px = it.next();
                 if (!px.getT().isAlive()) {
 
-                    if (!(px.getError()==null)) {
+                    if (px.getError()!=null) {
                         error = px.error;
                     }
                     px = null;
@@ -151,13 +160,14 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
             for (int i = 1; i < connexionList.size(); i++) {
                 try {
                     connexionList.get(i).close();
-                } catch (SQLException ex) {}
+                } catch (SQLException ex) {
+                    throw new SQLException("Error in multithread close connection");
+                }
             }
         }
 
         if (error != null) {
-            
-//            throw error;
+            throw new SQLException("Error in multithread execution");
         }
 
     }
@@ -206,11 +216,11 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
     public ApiService(String aCurrentPhase, String aParametersEnvironment, String aEnvExecution, String aDirectoryRoot, Integer aNbEnr,
             String... paramBatch) {
     	this();
-        loggerDispatcher.info("** initialiserVariable **", LOGGER);
+        loggerDispatcher.info("** initialiserVariable **", LOGGER_APISERVICE);
         try {
             this.connexion = UtilitaireDao.get(poolName).getDriverConnexion();
         } catch (Exception ex) {
-            LoggerHelper.error(LOGGER,ApiService.class, "ApiService()",ex);
+            LoggerHelper.error(LOGGER_APISERVICE,ApiService.class, "ApiService()",ex);
         }
 
         if (paramBatch != null && paramBatch.length > 0) {
@@ -243,7 +253,7 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
         this.setTableOutKo((dbEnv(aEnvExecution) + this.getCurrentPhase() + "_" + TraitementEtat.KO).toLowerCase());
         this.setNbEnr(aNbEnr);
 
-        loggerDispatcher.info("** Fin constructeur ApiService **", LOGGER);
+        loggerDispatcher.info("** Fin constructeur ApiService **", LOGGER_APISERVICE);
     }
 
     /**
@@ -265,13 +275,13 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
      * @param aNbEnr
      */
     public boolean initialiser() {
-        loggerDispatcher.info("** initialiser **", LOGGER);
+        loggerDispatcher.info("** initialiser **", LOGGER_APISERVICE);
         // Vérifie si y'a des sources à traiter
         if (this.todo) {
             try {
                 UtilitaireDao.get(poolName).executeBlock(this.connexion, configConnection());
             } catch (SQLException ex) {
-                LoggerHelper.error(LOGGER,ApiService.class, "initialiser()", ex);
+                LoggerHelper.error(LOGGER_APISERVICE,ApiService.class, "initialiser()", ex);
             }
             register(this.connexion, this.getPreviousPhase(), this.getCurrentPhase(), this.getTablePil(), this.tablePilTemp, this.getNbEnr());
         }
@@ -312,20 +322,20 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
      * @return
      */
     public boolean checkTodo(String tablePil, String phaseAncien, String phaseNouveau) {
-        StringBuilder requete = new StringBuilder();
+    	PreparedStatementBuilder requete = new PreparedStatementBuilder();
         boolean todo = false;
         requete.append("SELECT 1 FROM " + tablePil + " a ");
-        requete.append("WHERE phase_traitement='" + phaseAncien + "' AND '" + TraitementEtat.OK + "'=ANY(etat_traitement) ");
+        requete.append("WHERE phase_traitement=" + requete.quoteText(phaseAncien) + " AND " + requete.quoteText(TraitementEtat.OK.toString()) + "=ANY(etat_traitement) ");
         requete.append("and etape=1 ");
         requete.append("UNION ALL ");
         requete.append("SELECT 1 FROM " + tablePil + " a ");
-        requete.append("WHERE phase_traitement='" + phaseNouveau + "' AND '" + TraitementEtat.ENCOURS + "'=ANY(etat_traitement) ");
+        requete.append("WHERE phase_traitement=" + requete.quoteText(phaseNouveau) + " AND " + requete.quoteText(TraitementEtat.ENCOURS.toString()) + "=ANY(etat_traitement) ");
         requete.append("and etape=1 ");
         requete.append("limit 1 ");
         try {
             todo = UtilitaireDao.get(poolName).hasResults(this.connexion, requete);
         } catch (Exception ex) {
-            LoggerHelper.error(LOGGER,ApiService.class, "checkTodo()", ex);
+            LoggerHelper.error(LOGGER_APISERVICE,ApiService.class, "checkTodo()", ex);
         }
         return todo;
     }
@@ -343,26 +353,26 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
      * @throws SQLException
      */
     public void register(Connection connexion, String phaseIn, String phase, String tablePil, String tablePilTemp, Integer nbEnr) {
-        loggerDispatcher.info("** register **", LOGGER);
+        loggerDispatcher.info("** register **", LOGGER_APISERVICE);
         try {
-            // System.out.println(new java.util.Date());
             StringBuilder blocInit = new StringBuilder();
 
             // si il n'y a pas de sources déjà marquées en cours, on procède à la selection
-            if (!UtilitaireDao.get(poolName).hasResults(
-                    connexion,
-                    "select 1 from " + tablePil + " where phase_traitement='" + phase + "' AND '" + TraitementEtat.ENCOURS
-                            + "'=ANY(etat_traitement) and etape=1 limit 1")) {
+        	PreparedStatementBuilder requete = new PreparedStatementBuilder();
+        	requete.append("SELECT 1 FROM " + tablePil + " ");
+        	requete.append("\n WHERE phase_traitement=" + requete.quoteText(phase) + " ");
+        	requete.append("\n AND " + requete.quoteText(TraitementEtat.ENCOURS.toString())+ "=ANY(etat_traitement) ");
+        	requete.append("\n AND etape=1 ");
+        	requete.append("\n LIMIT 1 ");
+        	
+            if (!UtilitaireDao.get(poolName).hasResults(connexion,requete)) {
                 blocInit.append(selectionSource(tablePil, phaseIn, phase, nbEnr));
             }
             blocInit.append(copieTablePilotage(phase, tablePil, tablePilTemp));
 
-            // loggerDispatcher.info("Selection et copie de la table de pilotage : "
-            // + blocInit.toString(),logger);
-
             UtilitaireDao.get(poolName).executeBlock(connexion, blocInit);
         } catch (Exception ex) {
-            LoggerHelper.error(LOGGER,ApiService.class, "register()", ex);
+            LoggerHelper.error(LOGGER_APISERVICE,ApiService.class, "register()", ex);
         }
     }
 
@@ -372,6 +382,10 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
      * @return
      */
     protected String marqueJeuDeRegleApplique(String pilTemp) {
+    	return marqueJeuDeRegleApplique(pilTemp, null);
+    }
+    
+    protected String marqueJeuDeRegleApplique(String pilTemp, String defaultEtatTraitement) {
         StringBuilder requete = new StringBuilder();
         requete.append("WITH ");
         requete.append("prep AS (SELECT a.id_source, a.id_norme, a.periodicite, b.validite_inf, b.validite_sup, b.version ");
@@ -382,8 +396,12 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
         requete.append("	WHERE phase_traitement='" + this.getCurrentPhase() + "') ");
         requete.append("UPDATE " + pilTemp + " AS a ");
         requete.append("SET validite_inf=prep.validite_inf, validite_sup=prep.validite_sup, version=prep.version ");
+        if (defaultEtatTraitement!=null)
+        {
+        	requete.append(", etat_traitement='{"+defaultEtatTraitement+"}'");
+        }
         requete.append("FROM prep ");
-        requete.append("WHERE a.id_source=prep.id_source AND a.phase_traitement='" + this.getCurrentPhase() + "'; ");
+        requete.append("WHERE a.phase_traitement='" + this.getCurrentPhase() + "'; ");
         return requete.toString();
     }
 
@@ -501,7 +519,7 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
      */
     public static HashMap<String, ArrayList<String>> getBean(Connection c, String req) throws SQLException
     {
-    	GenericBean gb=  new GenericBean(UtilitaireDao.get("arc").executeRequest(c, req));
+    	GenericBean gb=  new GenericBean(UtilitaireDao.get("arc").executeRequest(c, new PreparedStatementBuilder(req)));
     	HashMap<String, ArrayList<String>> m = gb.mapContent();
 
     	if (gb.headers.size()>0 && m.get(gb.headers.get(0))==null)
@@ -515,6 +533,18 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
     	return m;
     }
     
+    /**
+     *  promote the application to the full right user role if required.
+     *  required is true if the restrictedUserAccount exists
+     * @throws SQLException
+     */
+    protected void switchToFullRightRole() throws SQLException
+    {
+		if (!properties.getDatabaseRestrictedUsername().equals(""))
+		{
+			UtilitaireDao.get("arc").executeImmediate(connexion, FormatSQL.changeRole(properties.getDatabaseUsername()));
+		}
+    }
     
     /**
      * Selection d'un lot d'id_source pour appliquer le traitement
@@ -588,7 +618,7 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
      * Efface les objets temporaires (tables, type, ...)
      */
     public void finaliser() {
-        loggerDispatcher.info("finaliser", LOGGER);
+        loggerDispatcher.info("finaliser", LOGGER_APISERVICE);
 
         try {
         if (this.todo) {
@@ -604,7 +634,7 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
             try {
                 UtilitaireDao.get(poolName).executeBlock(this.connexion, requete);
             } catch (Exception ex) {
-                LoggerHelper.error(LOGGER,ApiService.class, "finaliser()", ex);
+                LoggerHelper.error(LOGGER_APISERVICE,ApiService.class, "finaliser()", ex);
             }
 			
           if (this.currentPhase.equals(TraitementPhase.CHARGEMENT.toString()) && this.paramBatch!=null)
@@ -621,7 +651,7 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
 	                this.connexion = null;
 	            }
 	        } catch (Exception ex) {
-	            LoggerHelper.error(LOGGER,ApiService.class, "finaliser()", ex);
+	            LoggerHelper.error(LOGGER_APISERVICE,ApiService.class, "finaliser()", ex);
 	        }
 
         }
@@ -636,21 +666,11 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
      */
     public static void deleteTodo(Connection connexion, String tablePilTemp, String tablePrevious, String paramBatch) {
         try {
-        	
-            // LOCK OBLIGATOIRE POUR NE PAS PERDRE DE DONNER LORS DES EXECUTIONS EN PARALLELE
-//            loggerDispatcher.info("** nettoyage todo **", LOGGER);
-//            UtilitaireDao.get(poolName).executeBlock(
-//                    connexion,
-//                    "LOCK TABLE "
-//                            + tablePrevious
-//                            + " IN ACCESS EXCLUSIVE MODE;"
-//                            + FormatSQL.rebuildTableAsSelectWhere(tablePrevious, " id_source not in (SELECT distinct id_source from "
-//                                    + tablePilTemp + " b) ", "analyze " + tablePrevious + "(id_source); "
-//                                    ));
+
             // Si on est en batch, on drop les tables source
         	// sinon on retire le lien avec la table héritée
         	StringBuilder query=new StringBuilder();
-   		 	HashMap<String, ArrayList<String>> m=new GenericBean(UtilitaireDao.get(poolName).executeRequest(connexion, "select id_source from "+tablePilTemp+"")).mapContent();
+   		 	HashMap<String, ArrayList<String>> m=new GenericBean(UtilitaireDao.get(poolName).executeRequest(connexion, new PreparedStatementBuilder("select id_source from "+tablePilTemp+""))).mapContent();
        		int count=0; 
    		 	for (String z:m.get("id_source")) {	
    		 		
@@ -674,7 +694,7 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
        		UtilitaireDao.get(poolName).executeBlock(connexion, query);
                     
         } catch (Exception ex) {
-            LoggerHelper.error(LOGGER,ApiService.class, "deleteTodo()", ex);
+            LoggerHelper.error(LOGGER_APISERVICE,ApiService.class, "deleteTodo()", ex);
         }
 
     }
@@ -682,7 +702,7 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
 
     public static void maintenancePilotage(Connection connexion, String envExecution, String type) {
         String tablePil = dbEnv(envExecution) + TraitementTableExecution.PILOTAGE_FICHIER;
-        StaticLoggerDispatcher.info("** Maintenance Pilotage **", LOGGER);
+        StaticLoggerDispatcher.info("** Maintenance Pilotage **", LOGGER_APISERVICE);
 
         try {
             UtilitaireDao.get(poolName).executeImmediate(connexion,"vacuum " +type + " "+ tablePil + ";");
@@ -702,7 +722,7 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
     	// table de pilotage transposée par date d'entrée
     	String tablePilT = dbEnv(envExecution) + TraitementTableExecution.PILOTAGE_FICHIER+"_t";
         
-    	StaticLoggerDispatcher.info("** Maintenance Pilotage T **", LOGGER);
+    	StaticLoggerDispatcher.info("** Maintenance Pilotage T **", LOGGER_APISERVICE);
 
         try {
             UtilitaireDao.get(poolName).executeImmediate(connexion,FormatSQL.vacuumSecured(tablePilT, type));
@@ -718,7 +738,7 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
 	public static void maintenancePgCatalog(Connection connexion, String type)	{
         // postgres libere mal l'espace sur ces tables qaund on fait trop d'opération sur les colonnes
 		// vaccum full sinon ca fait quasiment rien ...
-			StaticLoggerDispatcher.info("** Maintenance Catalogue **", LOGGER);
+			StaticLoggerDispatcher.info("** Maintenance Catalogue **", LOGGER_APISERVICE);
             UtilitaireDao.get(poolName).maintenancePgCatalog(connexion, type);
 	}
 
@@ -733,7 +753,7 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
     public static void maintenance(Connection connexion, String envExecution, String typeMaintenance)       {
 //        maintenancePilotage(connexion, envExecution, typeMaintenance);
 //		maintenancePgCatalog(connexion, typeMaintenance);
-    	StaticLoggerDispatcher.info("** Fin de maintenance **", LOGGER);
+    	StaticLoggerDispatcher.info("** Fin de maintenance **", LOGGER_APISERVICE);
 
     }
 
@@ -768,15 +788,15 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
      * @return
      */
     public HashMap<String, ArrayList<String>> pilotageListIdsource(String tablePilotage, String aCurrentPhase, String etat) {
-        loggerDispatcher.info("pilotageListIdsource", LOGGER);
-        StringBuilder requete = new StringBuilder();
+        loggerDispatcher.info("pilotageListIdsource", LOGGER_APISERVICE);
+        PreparedStatementBuilder requete = new PreparedStatementBuilder();
         requete.append("SELECT container, id_source FROM " + tablePilotage + " ");
-        requete.append("WHERE phase_traitement='" + aCurrentPhase + "' ");
-        requete.append("AND '" + etat + "'=ANY(etat_traitement); ");
+        requete.append("WHERE phase_traitement=" + requete.quoteText(aCurrentPhase) + " ");
+        requete.append("AND " + requete.quoteText(etat) + "=ANY(etat_traitement); ");
         try {
             return new GenericBean(UtilitaireDao.get(poolName).executeRequest(this.connexion, requete)).mapContent();
         } catch (SQLException ex) {
-            LoggerHelper.error(LOGGER,ApiService.class, "pilotageListIdSource()", ex);
+            LoggerHelper.error(LOGGER_APISERVICE,ApiService.class, "pilotageListIdSource()", ex);
         }
         return new HashMap<String, ArrayList<String>>();
     }
@@ -866,7 +886,7 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
         
         for (int i = 0; i < aTableCible.length; i++) {
     	ArrayList<ArrayList<String>> listeColonne = UtilitaireDao.get(poolName).executeRequest(this.connexion,
-                FormatSQL.listAjoutColonne(aTableReference, aTableCible[i]));
+    			new PreparedStatementBuilder(FormatSQL.listAjoutColonne(aTableReference, aTableCible[i])));
         
         ArrayList<ArrayList<String>> listeColonneKeeped = new ArrayList<ArrayList<String>>();
 
@@ -894,10 +914,10 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
     public String listeColonne(Connection connexion, String tableIn) {
         ArrayList<ArrayList<String>> result = new ArrayList<>();
         try {
-            result = UtilitaireDao.get(poolName).executeRequest(connexion, FormatSQL.listeColonne(tableIn));
+            result = UtilitaireDao.get(poolName).executeRequest(connexion, new PreparedStatementBuilder(FormatSQL.listeColonne(tableIn)));
 
         } catch (SQLException ex) {
-            LoggerHelper.error(LOGGER,ApiService.class, "listeColonne()", ex);
+            LoggerHelper.error(LOGGER_APISERVICE,ApiService.class, "listeColonne()", ex);
         }
         StringBuilder listCol = new StringBuilder();
         if (result.size() >= 2) {// les données ne sont qu'à partir du 3e
@@ -923,9 +943,9 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
     public HashSet<String> listeColonneHashSet(Connection connexion, String tableIn) {
         ArrayList<ArrayList<String>> result = new ArrayList<>();
         try {
-            result = UtilitaireDao.get(poolName).executeRequest(connexion, FormatSQL.listeColonne(tableIn));
+            result = UtilitaireDao.get(poolName).executeRequest(connexion, new PreparedStatementBuilder(FormatSQL.listeColonne(tableIn)));
         } catch (SQLException ex) {
-            LoggerHelper.error(LOGGER,ApiService.class, "listeColonne()", ex);
+            LoggerHelper.error(LOGGER_APISERVICE,ApiService.class, "listeColonne()", ex);
         }
         HashSet<String> listCol = new HashSet<String>();
         if (result.size() >= 2) {// les données ne sont qu'à partir du 3e
@@ -1018,11 +1038,11 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
         try {
             UtilitaireDao.get("arc").executeRequest(
                     null,
-                    "update arc.pilotage_batch set last_init='" + dateFormat.format(dNow)
-                            + "', operation=case when operation='R' then 'O' else operation end;");
+                    new PreparedStatementBuilder("update arc.pilotage_batch set last_init='" + dateFormat.format(dNow)
+                            + "', operation=case when operation='R' then 'O' else operation end;"));
 
         } catch (SQLException e) {
-            LoggerHelper.error(LOGGER, e);
+            LoggerHelper.error(LOGGER_APISERVICE, e);
         }
     }
     
@@ -1084,6 +1104,71 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
 
         return requete.toString();
     }
+    
+    
+	/**
+	 * Directory management
+	 */
+	private static final String DIRECTORY_EXPORT_QUALIFIIER="EXPORT";
+
+	private static final String DIRECTORY_TOKEN="_";
+
+	private static final String DIRECTORY_ARCHIVE_QUALIFIIER="ARCHIVE";
+
+	private static final String DIRECTORY_OLD_QUALIFIIER="OLD";
+	
+    
+	public static String directoryEnvRoot(String rootDirectory, String env)
+	{
+		return rootDirectory + File.separator + env.replace(".", "_").toUpperCase();
+	}
+    
+	public static String directoryPhaseRoot(String rootDirectory, String env, TraitementPhase t)
+	{
+		return directoryEnvRoot(rootDirectory, env) + File.separator + t.toString();
+	}
+    
+	public static String directoryEnvExport(String rootDirectory, String env)
+	{
+		return directoryEnvRoot(rootDirectory, env) + File.separator + DIRECTORY_EXPORT_QUALIFIIER;
+	}
+    
+	public static String directoryPhaseEntrepot(String rootDirectory, String env, TraitementPhase t, String entrepot)
+	{
+		return directoryPhaseRoot(rootDirectory, env, t) + DIRECTORY_TOKEN + entrepot;
+	}
+	
+	public static String directoryPhaseEntrepotArchive(String rootDirectory, String env, TraitementPhase t, String entrepot)
+	{
+		return directoryPhaseEntrepot(rootDirectory, env, t, entrepot) + DIRECTORY_TOKEN + DIRECTORY_ARCHIVE_QUALIFIIER;
+	}
+
+	public static String directoryPhaseEntrepotArchiveOld(String rootDirectory, String env, TraitementPhase t, String entrepot)
+	{
+		return directoryPhaseEntrepotArchive(rootDirectory, env, t, entrepot) + File.separator + DIRECTORY_OLD_QUALIFIIER;
+	}
+	
+	public static String directoryPhaseEtat(String rootDirectory, String env, TraitementPhase t, TraitementEtat e)
+	{
+		return directoryPhaseRoot(rootDirectory, env, t) + DIRECTORY_TOKEN + e.toString();
+	}
+	
+	public static String directoryPhaseEtatOK(String rootDirectory, String env, TraitementPhase t)
+	{
+		return directoryPhaseEtat(rootDirectory, env, t, TraitementEtat.OK);
+	}
+	
+	public static String directoryPhaseEtatKO(String rootDirectory, String env, TraitementPhase t)
+	{
+		return directoryPhaseEtat(rootDirectory, env, t, TraitementEtat.KO);
+	}
+	
+	public static String directoryPhaseEtatEnCours(String rootDirectory, String env, TraitementPhase t)
+	{
+		return directoryPhaseEtat(rootDirectory, env, t, TraitementEtat.ENCOURS);
+	}
+	
+	
 
     /**
      * Création filtre sur les id_source marqué en état KO
@@ -1132,19 +1217,18 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
         return requete.toString();
     }
     
-    
-    
+  
 
     public void createTableInherit(Connection connexion, String tableIn, String tableIdSource) throws Exception
     {
 
     	// on créé la table héritée que si la table a des enregistrements
-    	if (UtilitaireDao.get(poolName).hasResults(connexion, "SELECT 1 FROM "+tableIn+" LIMIT 1"))
+    	if (UtilitaireDao.get(poolName).hasResults(connexion, new PreparedStatementBuilder("SELECT 1 FROM "+tableIn+" LIMIT 1")))
     	{
     	
         StringBuilder query = new StringBuilder();
         
-        StaticLoggerDispatcher.info("** createTableOK ** : "+tableIdSource, LOGGER);
+        StaticLoggerDispatcher.info("** createTableOK ** : "+tableIdSource, LOGGER_APISERVICE);
     	java.util.Date beginDate = new java.util.Date();
     	        
         query.append("DROP TABLE IF EXISTS " + tableIdSource + ";");
@@ -1154,13 +1238,18 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
         UtilitaireDao.get("arc").executeBlock(connexion, query);
         
         java.util.Date endDate = new java.util.Date();
-        StaticLoggerDispatcher.info("** createTableOK ** temps : " + (endDate.getTime()-beginDate.getTime()) + " ms", LOGGER);
+        StaticLoggerDispatcher.info("** createTableOK ** temps : " + (endDate.getTime()-beginDate.getTime()) + " ms", LOGGER_APISERVICE);
     	}
     	
     }
     
     
-    
+    /**
+     * Generate the filename
+     * @param tableName
+     * @param idSource
+     * @return
+     */
     public static String tableOfIdSource(String tableName, String idSource)
     {
     	String hashText="";
@@ -1170,11 +1259,11 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
 			m.update(idSource.getBytes(),0,idSource.length());
 			hashText=String.format("%1$032x",new BigInteger(1,m.digest()));
 		} catch (NoSuchAlgorithmException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
+			return null;
 		}
         return tableName + "_"+CHILD_TABLE_TOKEN+"_" + hashText;
     }
+
     
     /**
      * Créer la copie d'une table selectionnée sur un id_source particulier
@@ -1210,7 +1299,7 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
         StringBuilder query = new StringBuilder();
 
         // mise à jour du nombre d'enregistrement et du type composite
-        StaticLoggerDispatcher.info("** updateNbEnr **", LOGGER);
+        StaticLoggerDispatcher.info("** updateNbEnr **", LOGGER_APISERVICE);
         query.append("\n UPDATE " + tablePilTemp + " a ");
         query.append("\n \t SET nb_enr=(select count(*) from " + tableTravailTemp + ") ");
         
@@ -1245,9 +1334,7 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
          requete.append("\n FROM "+tableOfIdSource(tableIn,idSource)+"; ");
          
          return requete.toString();
-    }
-
-    
+    }   
 
     /**
      *
@@ -1257,27 +1344,21 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
         double start = System.currentTimeMillis();
         int nbLignes = 0;
 
-        loggerDispatcher.info("****** Execution " + this.getCurrentPhase() + " *******", LOGGER);
+        loggerDispatcher.info("****** Execution " + this.getCurrentPhase() + " *******", LOGGER_APISERVICE);
         try {
-
-            // set schema
-            // Méthode pour implémenter des maintenances sur la base de donnée
-            if (this.getCurrentPhase().equals(TraitementPhase.INITIALISATION.toString())) {
-                ApiInitialisationService.bddScript(this.getEnvExecution(), this.connexion);
-            }
 
             if (this.getCurrentPhase().equals(TraitementPhase.INITIALISATION.toString()) || this.getCurrentPhase().equals(TraitementPhase.RECEPTION.toString())) {
                 this.todo = true;
             } else {
                 this.todo = checkTodo(this.getTablePil(), this.getPreviousPhase(), this.getCurrentPhase());
             }
-            loggerDispatcher.info("A faire - " + this.getCurrentPhase() + " : " + this.todo, LOGGER);
+            loggerDispatcher.info("A faire - " + this.getCurrentPhase() + " : " + this.todo, LOGGER_APISERVICE);
 
             if (this.initialiser()) {
                 try {
                     this.executer();
                 } catch (Exception ex) {
-                    loggerDispatcher.error("Erreur dans " + this.getCurrentPhase() + ". ", ex, LOGGER);
+                    loggerDispatcher.error("Erreur dans " + this.getCurrentPhase() + ". ", ex, LOGGER_APISERVICE);
                     try {
                         ex.printStackTrace();
 
@@ -1297,23 +1378,74 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
             	else
             	{
 	            	try {
-	                    UtilitaireDao.get(poolName).executeRequest(this.connexion, "CREATE TABLE IF NOT EXISTS " + this.tablePilTemp + " (nb_enr int); ");
+	                    UtilitaireDao.get(poolName).executeImmediate(this.connexion, "CREATE TABLE IF NOT EXISTS " + this.tablePilTemp + " (nb_enr int); ");
 	                } catch (SQLException e) {
-	                    // TODO Auto-generated catch block
 	                    e.printStackTrace();
 	                }
-	                nbLignes = UtilitaireDao.get(poolName).getInt(this.connexion, "select coalesce(sum(nb_enr),0) from " + this.tablePilTemp);
+	                nbLignes = UtilitaireDao.get(poolName).getInt(this.connexion, new PreparedStatementBuilder("select coalesce(sum(nb_enr),0) from " + this.tablePilTemp));
             	}
             }
             this.finaliser();
         }
 
-        loggerDispatcher.info("****** Fin " + this.getCurrentPhase() + " *******", LOGGER);
+        loggerDispatcher.info("****** Fin " + this.getCurrentPhase() + " *******", LOGGER_APISERVICE);
 
         return new ServiceReporting(nbLignes, System.currentTimeMillis() - start);
 
     }
 
+    /**
+     * Retour arriere vers une phase
+     * @param phaseAExecuter
+     * @param env
+     * @param rootDirectory
+     * @param undoFilesSelection
+     */
+    public static void backToTargetPhase(String phaseAExecuter, String env, String rootDirectory, PreparedStatementBuilder undoFilesSelection)
+    {
+		if (TraitementPhase.valueOf(phaseAExecuter).getOrdre()==TraitementPhase.INITIALISATION.getOrdre())
+		{
+			resetBAS(env, rootDirectory);
+		}
+		else
+		{
+		    ApiInitialisationService serv = new ApiInitialisationService(TraitementPhase.INITIALISATION.toString(),
+		    		IHM_SCHEMA, env, rootDirectory,
+					TraitementPhase.INITIALISATION.getNbLigneATraiter());
+			try {
+				serv.retourPhasePrecedente(TraitementPhase.valueOf(phaseAExecuter), undoFilesSelection,
+						new ArrayList<>(Arrays.asList(TraitementEtat.OK, TraitementEtat.KO)));
+			} finally {
+		        serv.finaliser();
+			}
+		}
+    }
+    
+    
+    /**
+     * reset data in the sandbox
+     * @param model
+     * @param env
+     * @param rootDirectory
+     */
+    public static void resetBAS(String env, String rootDirectory) {
+	    try {
+			ApiInitialisationService.clearPilotageAndDirectories(rootDirectory,
+					env);
+		} catch (Exception e) {
+	        StaticLoggerDispatcher.info(e, LOGGER_APISERVICE);
+		}
+		ApiInitialisationService service = new ApiInitialisationService(TraitementPhase.INITIALISATION.toString(),
+				IHM_SCHEMA, env, rootDirectory,
+				TraitementPhase.INITIALISATION.getNbLigneATraiter());
+		try {
+			service.resetEnvironnement();
+		} finally {
+			service.finaliser();
+		}
+    }
+    
+    
     public String getTablePilTemp() {
         return this.tablePilTemp;
     }
@@ -1383,14 +1515,16 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
         // ERROR: current transaction is aborted, commands ignored until end of transaction block
         this.connexion.setAutoCommit(false);
         this.connexion.rollback();
+        
+    	// promote the application user account to full right
+    	switchToFullRightRole();
+        
         StringBuilder requete = new StringBuilder();
-        // Date date = new Date();
-        // SimpleDateFormat formatter = new SimpleDateFormat("dd/MM/yyyy hh:mm:ss");
+        
         for (int i = 0; i < tableDrop.length; i++) {
             requete.append("DROP TABLE IF EXISTS " + tableDrop[i] + ";");
         }
 
-        // requete.append("UPDATE "+tablePil+"  SET phase_traitement='"+phaseAvant+"', etat_traitement='{"+TraitementEtat.OK+"}' ");
         requete.append("UPDATE " + tablePil + " set etape=2, etat_traitement= '{" + TraitementEtat.KO + "}', rapport='"
                 + exception.toString().replace("'", "''").replaceAll("\r", "") + "' ");
         requete.append("WHERE phase_traitement='" + phase + "' AND etat_traitement='{" + TraitementEtat.ENCOURS + "}'"
@@ -1400,6 +1534,7 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
         UtilitaireDao.get(poolName).executeBlock(connexion, requete);
     }
 
+    
     /**
      * permet de récupérer un tableau de la forme id_source | id1 , id2, id3 ... type_comp | comp1,comp2, comp3 ...
      * 
@@ -1409,9 +1544,9 @@ public abstract class ApiService implements IDbConstant, IConstanteNumerique {
     protected HashMap<String, ArrayList<String>> recuperationIdSource(String phaseTraiement) throws SQLException {
         HashMap<String, ArrayList<String>> pil = new GenericBean(UtilitaireDao.get(poolName).executeRequest(
                 this.connexion,
-                "SELECT p.id_source "
+                new PreparedStatementBuilder("SELECT p.id_source "
                 + "\n \t FROM " + this.getTablePilTemp() + " p "
-                + "\n \t order by id_source ;")).mapContent();
+                + "\n \t order by id_source ;"))).mapContent();
 
         return (pil);
 

@@ -51,6 +51,15 @@ public class WebSecurityConfig  extends KeycloakWebSecurityConfigurerAdapter {
 
 	@Override
 	protected void configure(HttpSecurity http) throws Exception {
+		// disable debug gui if property is set
+		if (!properties.getDisableDebugGui().isEmpty())
+		{
+			// disable query debugging gui actions
+			http.authorizeRequests().antMatchers("/selectQuery/**","/sortQuery/**","/selectTable/**","/sortTable/**").denyAll();
+			
+			// disable file debugging gui actions
+			http.authorizeRequests().antMatchers("/selectFile/**","/**DirIn/**","/**DirOut**").denyAll();
+		}
 		
 		// disable https when keycloak file doesn't exist
 		if (!isKeycloakActive()) {
@@ -67,16 +76,16 @@ public class WebSecurityConfig  extends KeycloakWebSecurityConfigurerAdapter {
 			if (authorizedRoles.length == 0) {
 				// authenticated
 				http.authorizeRequests()
-				.antMatchers(HttpMethod.GET, "/*").authenticated()
-				.antMatchers(HttpMethod.POST, "/*").authenticated();		
+				.antMatchers(HttpMethod.GET, "/**").authenticated()
+				.antMatchers(HttpMethod.POST, "/**").authenticated();		
 			} else {
 				// role restriction
 				http.authorizeRequests()
-				.antMatchers(HttpMethod.GET, "/*").hasAnyAuthority(authorizedRoles)
-				.antMatchers(HttpMethod.POST, "/*").hasAnyAuthority(authorizedRoles);
+				.antMatchers(HttpMethod.GET, "/**").hasAnyAuthority(authorizedRoles)
+				.antMatchers(HttpMethod.POST, "/**").hasAnyAuthority(authorizedRoles);
 			}
 			// everything else
-			http.authorizeRequests().anyRequest().denyAll();			
+			http.authorizeRequests().anyRequest().denyAll();
 		}
 	}
 

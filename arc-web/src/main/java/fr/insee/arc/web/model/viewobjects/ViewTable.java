@@ -13,7 +13,7 @@ public class ViewTable extends VObject {
         
         this.setSessionName("viewTable");
 
-        this.setPaginationSize(25);
+        this.setDefaultPaginationSize(25);
         
         this.setConstantVObject(new ConstantVObject(
 
@@ -24,7 +24,7 @@ public class ViewTable extends VObject {
             private static final long serialVersionUID = -3124381932840827423L;
 
 			{
-                put("aaa", new ColumnRendering(true, "aaa", "80px", "text", null, false));
+                put("aaa", new ColumnRendering(true, "aaa", "100%", "text", null, false));
              }
         }));
     }

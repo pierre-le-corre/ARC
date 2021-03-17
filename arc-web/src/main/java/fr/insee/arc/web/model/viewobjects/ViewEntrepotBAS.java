@@ -11,7 +11,7 @@ public class ViewEntrepotBAS extends VObject {
         super();
         this.setSessionName("viewEntrepotBAS");
         this.setTitle("view.envManagement.fileStore");
-        this.setPaginationSize(15);
+        this.setDefaultPaginationSize(15);
         
         this.setConstantVObject(new ConstantVObject(new HashMap<String, ColumnRendering>() {
 
@@ -22,7 +22,7 @@ public class ViewEntrepotBAS extends VObject {
 
             {
 
-                put("id_entrepot", new ColumnRendering(true, "Entrepot", "60px", "text", null, true));
+                put("id_entrepot", new ColumnRendering(true, "Entrepot", "100%q", "text", null, true));
             }
         }
 

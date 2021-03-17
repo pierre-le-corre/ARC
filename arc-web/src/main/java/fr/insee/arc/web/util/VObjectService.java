@@ -38,6 +38,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import fr.insee.arc.core.util.LoggerDispatcher;
 import fr.insee.arc.utils.dao.ModeRequete;
+import fr.insee.arc.utils.dao.PreparedStatementBuilder;
 import fr.insee.arc.utils.dao.UtilitaireDao;
 import fr.insee.arc.utils.structure.AttributeValue;
 import fr.insee.arc.utils.structure.GenericBean;
@@ -117,12 +118,15 @@ public class VObjectService {
 			if (currentData.getSelectedLines() == null) {
 				currentData.setSelectedLines(v0.getSelectedLines());
 	        }
-			if (currentData.getPaginationSize() == 0) {
+			if (currentData.getPaginationSize() == null) {
 				currentData.setPaginationSize(v0.getPaginationSize());
 			}
 			if (currentData.getInputFields() != null && v0.getDefaultInputFields() != null) {
-				for (int i = 0; i < v0.getHeadersDLabel().size(); i++) {
+				for (int i = 0; i < v0.getHeadersDLabel().size(); i++) {					
 			        if (v0.getDefaultInputFields().get(v0.getHeadersDLabel().get(i)) != null) {
+			        	// complete arraylist so that "i" will be in bound for the set command
+			        	for (int k=currentData.getInputFields().size(); k<=i;k++)
+			        			currentData.getInputFields().add(null);
 			            currentData.getInputFields().set(i, v0.getDefaultInputFields().get(v0.getHeadersDLabel().get(i)));
 			        }
 			    }
@@ -136,6 +140,9 @@ public class VObjectService {
 			if (currentData.getAfterUpdateQuery() == null) {
 			    currentData.setAfterUpdateQuery(v0.getAfterUpdateQuery());
 			}
+			if (currentData.getMainQuery() == null) {
+			    currentData.setMainQuery(v0.getMainQuery());
+			}
 		}
 		return currentData;
 	}
@@ -147,9 +154,10 @@ public class VObjectService {
 	 * @param table
 	 * @param defaultInputFields
 	 */
-	public void initialize(VObject data, String mainQuery, String table, HashMap<String, String> defaultInputFields) {
-		initialize(data, mainQuery, table, defaultInputFields, (content) -> content);
+	public void initialize(VObject data, PreparedStatementBuilder mainQuery, String table, HashMap<String, String> defaultInputFields) {
+		initialize(data, mainQuery, table, defaultInputFields, ((content) -> content));
 	}
+
 
 	/**
 	 *
@@ -159,7 +167,7 @@ public class VObjectService {
 	 * @param defaultInputFields
 	 * @param reworkContent function to rewrite the fetched content
 	 */
-	public void initialize(VObject data, String mainQuery, String table, HashMap<String, String> defaultInputFields, 
+	public void initialize(VObject data, PreparedStatementBuilder mainQuery, String table, HashMap<String, String> defaultInputFields, 
 			Function<ArrayList<ArrayList<String>>, ArrayList<ArrayList<String>>> reworkContent) {
 	    try {
 	        LoggerHelper.debugAsComment(LOGGER, "initialize", data.getSessionName());
@@ -181,14 +189,17 @@ public class VObjectService {
 	        Integer indexPage = pageManagement(mainQuery, data);
 	
 	        // lancement de la requete principale et recupération du tableau
-	        StringBuilder requete = new StringBuilder();
-	        requete.append("select alias_de_table.* from (" + mainQuery + ") alias_de_table " + buildFilter(data.getFilterFields(), data.getHeadersDLabel()));
-	
+	        PreparedStatementBuilder requete = new PreparedStatementBuilder();
+	        requete.append("select alias_de_table.* from (");
+	        requete.append(mainQuery);
+	        requete.append(") alias_de_table ");
+	        requete.append(buildFilter(data.getFilterFields(), data.getHeadersDLabel()));
+ 
 	        if (this.noOrder == false) {
 	            requete.append(buildOrderBy(data.getHeaderSortDLabels(), data.getHeaderSortDOrders()));
 	        }
 	
-	        if (data.getPaginationSize() > 0) {
+	        if (data.getPaginationSize() != null && data.getPaginationSize() > 0) {
 	            requete.append(" limit " + data.getPaginationSize() + " offset " + ((indexPage - 1) * data.getPaginationSize()));
 	        }
 	
@@ -273,18 +284,29 @@ public class VObjectService {
 	
 	}
 
-	private Integer pageManagement(String mainQuery, VObject currentData) {
+	private Integer pageManagement(PreparedStatementBuilder mainQuery, VObject currentData) {
+				
 		ArrayList<ArrayList<String>> aContent = new ArrayList<>();
 		if (currentData.getIdPage() == null) {
 		    currentData.setIdPage("1");
 		}
+		
+		if (currentData.getPaginationSize() == null) {
+			currentData.setPaginationSize(currentData.getDefaultPaginationSize());
+		}
+		
 		if (!this.noCount) {
-		    if (currentData.getPaginationSize() > 0 && this.noOrder == false) {
+		    if (currentData.getPaginationSize() > 0 
+		    		&& !this.noOrder) {
 		        try {
-		            aContent = UtilitaireDao.get(this.pool).executeRequest(
-		                    null,
-		                    "select ceil(count(1)::float/" + currentData.getPaginationSize() + ") from (" + mainQuery + ") alias_de_table "
-		                            + buildFilter(currentData.getFilterFields(), currentData.getHeadersDLabel()), ModeRequete.IHM_INDEXED);
+		        	
+		        	PreparedStatementBuilder requete=new PreparedStatementBuilder();
+		        	requete.append("select ceil(count(1)::float/" + currentData.getPaginationSize() + ") from (");
+		        	requete.append(mainQuery);
+		        	requete.append(") alias_de_table ");
+		        	requete.append(buildFilter(currentData.getFilterFields(), currentData.getHeadersDLabel()));
+
+		            aContent = UtilitaireDao.get(this.pool).executeRequest(null, requete, ModeRequete.IHM_INDEXED);
 		        } catch (SQLException ex) {
 		            currentData.setMessage(ex.getMessage());
 		            LoggerHelper.errorGenTextAsComment(getClass(), "initialize()", LOGGER, ex);
@@ -363,7 +385,7 @@ public class VObjectService {
             if (data.getConstantVObject().getColumnRender().get(headers.get(i)) != null) {
                 headersVSize.add(data.getConstantVObject().getColumnRender().get(headers.get(i)).size);
             } else {
-                headersVSize.add("/**/");
+                headersVSize.add("auto");
             }
         }
         return headersVSize;
@@ -500,10 +522,10 @@ public class VObjectService {
 
             // Récupération des colonnes de la table cible
             List<String> nativeFieldList = (ArrayList<String>) UtilitaireDao.get(this.pool).getColumns(null, new ArrayList<>(), currentData.getTable());
-
+            
             Boolean allNull = true;
-            StringBuilder reqInsert = new StringBuilder();
-            StringBuilder reqValues = new StringBuilder();
+            PreparedStatementBuilder reqInsert = new PreparedStatementBuilder();
+            PreparedStatementBuilder reqValues = new PreparedStatementBuilder();
             reqInsert.append("INSERT INTO " + currentData.getTable() + " (");
             reqValues.append("VALUES (");
             int j = 0;
@@ -520,18 +542,12 @@ public class VObjectService {
                     if (attributeValues != null && attributeValues.length > j
                             &&
                             map.containsKey(currentData.getHeadersDLabel().get(i).toLowerCase() )
-                            
-                            // attributeValues[j].getFirst().equalsIgnoreCase(v0.headersDLabel.get(i))
                             ) {
                         insertValue =
-                                map.get(currentData.getHeadersDLabel().get(i).toLowerCase())
-                                
-                                //attributeValues[j].getSecond()
-                                ;
-                        //j++;
+                                map.get(currentData.getHeadersDLabel().get(i).toLowerCase());
                     } else if (currentData.getInputFields().get(i) != null && currentData.getInputFields().get(i).length() > 0) {
                         allNull = false;
-                        insertValue = "'" + currentData.getInputFields().get(i).replace("'", "''") + "'::" + currentData.getHeadersDType().get(i);
+                        insertValue = reqValues.quoteText(currentData.getInputFields().get(i))+ "::" + currentData.getHeadersDType().get(i);
                     } else {
                         insertValue = "null";
                     }
@@ -540,17 +556,19 @@ public class VObjectService {
             }
             reqInsert.append(") ");
             reqValues.append("); ");
-            StringBuilder requete = new StringBuilder();
+            PreparedStatementBuilder requete = new PreparedStatementBuilder();
             requete.append("BEGIN;");
             requete.append(reqInsert);
             requete.append(reqValues);
             if (currentData.getAfterInsertQuery() != null) {
-                requete.append("\n" + currentData.getAfterInsertQuery() + "\n");
+                requete.append("\n");
+                requete.append(currentData.getAfterInsertQuery());
+                requete.append("\n");
             }
             requete.append("END;");
             try {
                 if (!allNull) {
-                    UtilitaireDao.get(this.pool).executeRequest(null, requete.toString());
+                    UtilitaireDao.get(this.pool).executeRequest(null, requete);
                 }
             } catch (SQLException e) {
                 currentData.setMessage(e.getMessage());
@@ -563,6 +581,8 @@ public class VObjectService {
         }
         return true;
     }
+    
+  
 
     /*
      *
@@ -573,7 +593,8 @@ public class VObjectService {
 
         ArrayList<String> listeColonneNative = (ArrayList<String>) UtilitaireDao.get(this.pool).getColumns(null, new ArrayList<>(), currentData.getTable());
 
-        StringBuilder reqDelete = new StringBuilder();
+        
+        PreparedStatementBuilder reqDelete = new PreparedStatementBuilder();
         reqDelete.append("BEGIN; ");
         for (int i = 0; i < currentData.getSelectedLines().size(); i++) {
             if (currentData.getSelectedLines().get(i) != null && currentData.getSelectedLines().get(i)) {
@@ -594,7 +615,7 @@ public class VObjectService {
                         reqDelete.append(v0.getHeadersDLabel().get(j));
 
                         if (v0.getContent().get(i).d.get(j) != null && v0.getContent().get(i).d.get(j).length() > 0) {
-                            reqDelete.append("='" + v0.getContent().get(i).d.get(j).replace("'", "''") + "'::" + v0.getHeadersDType().get(j));
+								reqDelete.append("="+ reqDelete.quoteText(v0.getContent().get(i).d.get(j))+ "::" + v0.getHeadersDType().get(j));
                         } else {
                             reqDelete.append(" is null");
                         }
@@ -605,7 +626,7 @@ public class VObjectService {
         }
         reqDelete.append("END; ");
         try {
-            UtilitaireDao.get(this.pool).executeRequest(null, "" + reqDelete);
+            UtilitaireDao.get(this.pool).executeRequest(null, reqDelete);
         } catch (SQLException e) {
         	currentData.setMessage(e.getMessage());
         }
@@ -632,7 +653,8 @@ public class VObjectService {
             }
         }
         LoggerHelper.traceAsComment(LOGGER, "toBeUpdated : ", toBeUpdated);
-        StringBuilder reqDelete = new StringBuilder();
+                
+        PreparedStatementBuilder reqDelete = new PreparedStatementBuilder();
         reqDelete.append("BEGIN; ");
         for (int i = 0; i < v0.getContent().size(); i++) {
             if (toBeUpdated.contains(i)) {
@@ -647,7 +669,7 @@ public class VObjectService {
                     }
                     reqDelete.append(v0.getHeadersDLabel().get(j));
                     if (v0.getContent().get(i).d.get(j) != null && v0.getContent().get(i).d.get(j).length() > 0) {
-                        reqDelete.append("='" + v0.getContent().get(i).d.get(j).replace("'", "''") + "'::" + v0.getHeadersDType().get(j));
+							reqDelete.append("=" + reqDelete.quoteText(v0.getContent().get(i).d.get(j)) + "::" + v0.getHeadersDType().get(j));
                     } else {
                         reqDelete.append(" is null");
                     }
@@ -657,7 +679,7 @@ public class VObjectService {
         }
         reqDelete.append("END; ");
         try {
-            UtilitaireDao.get(this.pool).executeRequest(null, "" + reqDelete);
+            UtilitaireDao.get(this.pool).executeRequest(null, reqDelete);
         } catch (SQLException e) {
         	currentData.setMessage(e.getMessage());
         }
@@ -685,15 +707,14 @@ public class VObjectService {
         ArrayList<String> nativeFieldsList = (ArrayList<String>) UtilitaireDao.get(this.pool).getColumns(null, new ArrayList<>(), currentData.getTable());
 
         // SQL update query
-        StringBuilder reqUpdate = new StringBuilder();
+        PreparedStatementBuilder reqUpdate = new PreparedStatementBuilder();
         reqUpdate.append("BEGIN; ");
 
         for (int i = 0; i < toBeUpdated.size(); i++) {
             reqUpdate.append("\nUPDATE " + v0.getTable() + " SET ");
             boolean comma = false;
-
             int lineToBeUpdated = toBeUpdated.get(i);
-			for (int j = 0; j < v0.getHeadersDLabel().size(); j++) {
+			for (int j = 0; j < currentData.getContent().get(lineToBeUpdated).d.size(); j++) {
                 // If the field exists in the bdd and has any value
                 String label = v0.getHeadersDLabel().get(j);
 				String newValue = currentData.getContent().get(lineToBeUpdated).d.get(j);
@@ -708,14 +729,14 @@ public class VObjectService {
                     } else {
                         //Serial type is set as int4
                     	String type = v0.getHeadersDType().get(j).equals("serial") ? "int4" : v0.getHeadersDType().get(j);
-                        reqUpdate.append(label + "='" + newValue.replace("'", "''") + "'::" + type);
+							reqUpdate.append(label + "=" + reqUpdate.quoteText(newValue) + "::" + type);
                     }
                 }
             }
             reqUpdate.append(" WHERE ");
 
             comma = false;
-            for (int j = 0; j < v0.getHeadersDLabel().size(); j++) {
+            for (int j = 0; j < currentData.getContent().get(lineToBeUpdated).d.size(); j++) {
                 String label = v0.getHeadersDLabel().get(j);
 				if (nativeFieldsList.contains(label)) {
                     if (comma) {
@@ -728,7 +749,7 @@ public class VObjectService {
                         reqUpdate.append(label + " IS NULL");
                     } else{
                     	String type = v0.getHeadersDType().get(j).equals("serial") ? "int4" : v0.getHeadersDType().get(j);
-                        reqUpdate.append(label + "='" + oldValue.replace("'", "''") + "'::" + type);
+							reqUpdate.append(label + "=" + reqUpdate.quoteText(oldValue) + "::" + type);
                     }
 					
 					// Updates value in v0
@@ -741,12 +762,14 @@ public class VObjectService {
             reqUpdate.append("; ");
         }
         if (v0.getAfterUpdateQuery() != null) {
-            reqUpdate.append("\n" + v0.getAfterUpdateQuery() + "\n");
+            reqUpdate.append("\n");
+            reqUpdate.append(v0.getAfterUpdateQuery());
+            reqUpdate.append("\n");
         }
         reqUpdate.append("END;");
         try {
             if (!toBeUpdated.isEmpty()) {
-                UtilitaireDao.get(this.pool).executeRequest(null, "" + reqUpdate);
+                UtilitaireDao.get(this.pool).executeRequest(null, reqUpdate);
             }
             session.put(currentData.getSessionName(), v0);
         } catch (SQLException e) {
@@ -754,16 +777,16 @@ public class VObjectService {
         }
     }
 
-    public StringBuilder queryView(VObject currentData) {
+    public PreparedStatementBuilder queryView(VObject currentData) {
     	VObject v0 = fetchVObjectData(currentData.getSessionName());
         if (currentData.getFilterFields() == null) {
             currentData.setFilterFields(v0.getFilterFields());
         }
-        StringBuilder requete = new StringBuilder();
-        requete.append("select alias_de_table.* from (" + v0.getMainQuery() + ") alias_de_table ");
+        PreparedStatementBuilder requete = new PreparedStatementBuilder();
+        requete.append("select alias_de_table.* from (");
+        requete.append(v0.getMainQuery());
+        requete.append(") alias_de_table ");
         requete.append(buildFilter(currentData.getFilterFields(), v0.getHeadersDLabel()));
-        // requete.append(buildOrderBy(v0.headerSortDLabels,
-        // v0.headerSortDOrders));
         return requete;
     }
 
@@ -788,28 +811,39 @@ public class VObjectService {
         session.remove(data.getSessionName());
     }
 
-    public String buildFilter(ArrayList<String> filterFields, ArrayList<String> headersDLabel) {
+    
+    public static final int FILTER_LIKE_CONTAINS=0;
+    public static final int FILTER_LIKE_ENDSWITH=1;
+    public static final int FILTER_REGEXP_SIMILARTO=2;
+    
+    public static final String FILTER_OR="OR";
+    public static final String FILTER_AND="AND";
+
+
+
+    /**
+     * Build the filter expression
+     * @param filterFields
+     * @param headersDLabel
+     * @return
+     */
+    
+    public PreparedStatementBuilder buildFilter(ArrayList<String> filterFields, ArrayList<String> headersDLabel) {
 
         Pattern patternMath = Pattern.compile("[<>=]");
 
-        StringBuilder s = new StringBuilder(" WHERE true ");
+        PreparedStatementBuilder s = new PreparedStatementBuilder(" WHERE true ");
         if (headersDLabel == null || filterFields == null) {
-            return s.toString();
+            return s;
         }
 
-        // boolean first=false;
         for (int i = 0; i < filterFields.size(); i++) {
             if (filterFields.get(i) != null && !filterFields.get(i).equals("")) {
 
-                if ((this.filterPattern == 0 || this.filterPattern == 1 || this.filterPattern == 2)) {
+                if ((this.filterPattern == FILTER_LIKE_CONTAINS || this.filterPattern == FILTER_LIKE_ENDSWITH || this.filterPattern == FILTER_REGEXP_SIMILARTO)) {
                     s.append(" AND (");
                 }
-
-                // if (!first)
-                // {
-                // s.append(" WHERE ");
-                // }
-
+                
                 /*
                  * Si on a un symbole mathématique
                  */
@@ -823,16 +857,15 @@ public class VObjectService {
                         String[] morceauReq = filtre.split("§");
 
                         // on découpe suivant les ET
-                        String[] listeAND = morceauReq[1].split("ET");
+                        String[] listeAND = morceauReq[1].split(FILTER_AND);
 
                         for (String conditionAND : listeAND) {
                             // on découpe suivant les OU
-                            String[] listeOR = conditionAND.split("OU");
+                            String[] listeOR = conditionAND.split(FILTER_OR);
                             for (String condtionOR : listeOR) {
-
-                                condtionOR = condtionOR.trim().substring(0, 1) + "'" + condtionOR.trim().substring(1) + "'";
-                                s.append(" to_date(" + headersDLabel.get(i) + ", '" + morceauReq[0] + "')" + condtionOR);
-
+                                s.append(" to_date(" + headersDLabel.get(i) + "::text, " + s.quoteText(morceauReq[0]) + ")"); // cast database column to the searched date format
+                                s.append(condtionOR.trim().substring(0, 1)); // operator
+                                s.append(" to_date(" + s.quoteText(condtionOR.trim().substring(1)) + "," + s.quoteText(morceauReq[0]) + ") "); // cast condition expression to the searched date format
                                 s.append(" OR");
                             }
                             // on retire les dernier OR
@@ -842,25 +875,26 @@ public class VObjectService {
 
                     } else { // on a des nombres
                         // on découpe suivant les ET
-                        String[] listeAND = filterFields.get(i).split("ET");
+                        String[] listeAND = filterFields.get(i).split(FILTER_AND);
 
                         for (String conditionAND : listeAND) {
                             // on découpe suivant les OU
-                            String[] listeOR = conditionAND.split("OU");
+                            String[] listeOR = conditionAND.split(FILTER_OR);
                             for (String condtionOR : listeOR) {
                                 if (condtionOR.contains("[")) { // cas ou on va chercher dans un vecteur
 
                                     condtionOR = condtionOR.trim();
 
-                                    String colonne = condtionOR.substring(0,1)
-                                    		+ "array_position("+headersDLabel.get(i-1)+",'"
-                                    		+ condtionOR.substring(1,condtionOR.indexOf("]"))
-                                    		+ "')"
-                                    		+ condtionOR.substring(condtionOR.indexOf("]"),condtionOR.indexOf("]")+1); // on prend le [X]
+                                    s.append(" (" + headersDLabel.get(i));
+                                    
+                                    s.append(condtionOR.substring(0,1)
+                                    		+ "array_position("+headersDLabel.get(i-1)+","
+                                    		+ s.quoteText(condtionOR.substring(1,condtionOR.indexOf("]")))
+                                    		+ ")"
+                                    		+ condtionOR.substring(condtionOR.indexOf("]"),condtionOR.indexOf("]")+1));
+                                    
+                                    s.append(condtionOR.substring(condtionOR.indexOf("]")+1));
 
-                                    condtionOR = condtionOR.substring(condtionOR.indexOf("]")+1);
-
-                                    s.append(" (" + headersDLabel.get(i) + colonne + "::bigint)" + condtionOR);
 
                                 } else {
                                     s.append(" (" + headersDLabel.get(i) + "::bigint)" + condtionOR);
@@ -879,43 +913,43 @@ public class VObjectService {
 
                 } else {
 
-                    // if (first && (filterPattern == 2))
-                    // {
-                    // s.append(" OR ");
-                    // }
-
-                    if (this.filterPattern == 0 || this.filterPattern == 1) {
-                        s.append(" " + this.filterFunction + "(" + headersDLabel.get(i) + "::text) LIKE '");
+                	
+                	String toSearch="";
+                	
+                    if (this.filterPattern == FILTER_LIKE_CONTAINS || this.filterPattern == FILTER_LIKE_ENDSWITH) {
+                        s.append(" " + this.filterFunction + "(" + headersDLabel.get(i) + "::text) LIKE ");
                     }
 
-                    if (this.filterPattern == 2) {
-                        s.append(" ' '||" + this.filterFunction + "(" + headersDLabel.get(i) + "::text) SIMILAR TO '");
+                    if (this.filterPattern == FILTER_REGEXP_SIMILARTO) {
+                        s.append(" ' '||" + this.filterFunction + "(" + headersDLabel.get(i) + "::text) SIMILAR TO ");
                     }
 
                     // Si on a déjà un % dans le filtre on n'en rajoute pas
-                    if ((this.filterPattern == 0 || this.filterPattern == 2) && !filterFields.get(i).contains("%")) {
-                        s.append("%");
+                    if ((this.filterPattern == FILTER_LIKE_CONTAINS || this.filterPattern == FILTER_REGEXP_SIMILARTO) && !filterFields.get(i).contains("%")) {
+                    	toSearch+="%";
                     }
 
-                    if (this.filterPattern == 0 || this.filterPattern == 1) {
-                        s.append(filterFields.get(i).toUpperCase());
+                    if (this.filterPattern == FILTER_LIKE_CONTAINS || this.filterPattern == FILTER_LIKE_ENDSWITH) {
+                    	toSearch+=filterFields.get(i).toUpperCase();
                     }
 
-                    if (this.filterPattern == 2) {
+                    if (this.filterPattern == FILTER_REGEXP_SIMILARTO) {
                         String aChercher = patternMather(filterFields.get(i).toUpperCase().trim());
-                        s.append("( " + aChercher.replace(" ", "| ") + ")%");
+                        toSearch+="( " + aChercher.replace(" ", "| ") + ")%";
                     }
 
-                    if ((this.filterPattern == 0 || this.filterPattern == 1) && !filterFields.get(i).contains("%")) {
-                        s.append("%");
+                    if ((this.filterPattern == FILTER_LIKE_CONTAINS || this.filterPattern == FILTER_LIKE_ENDSWITH) && !filterFields.get(i).contains("%")) {
+                    	toSearch+="%";
                     }
-                    s.append("'");
+                    
+                    s.append(s.quoteText(toSearch));
+                    
                 }
                 s.append(") ");
             }
         }
         s.append(" ");
-        return s.toString();
+        return s;
     }
 
     public String patternMather(String aChercher) {
@@ -936,11 +970,13 @@ public class VObjectService {
      * @param headerSortDOrders ordres du tri des colonnes
      * @return
      */
-    public String buildOrderBy(ArrayList<String> headerSortLabels, ArrayList<Boolean> headerSortDOrders) {
-        StringBuilder s = new StringBuilder();
+    public PreparedStatementBuilder buildOrderBy(ArrayList<String> headerSortLabels, ArrayList<Boolean> headerSortDOrders) {
         if (headerSortLabels == null) {
-            return "order by alias_de_table ";
+            return new PreparedStatementBuilder("order by alias_de_table ");
         }
+
+        PreparedStatementBuilder s = new PreparedStatementBuilder();
+
         for (int i = 0; i < headerSortLabels.size(); i++) {
             if (i > 0) {
                 s.append(",");
@@ -953,7 +989,7 @@ public class VObjectService {
             }
         }
         s.append(", alias_de_table ");
-        return s.toString();
+        return s;
     }
 
     /**
@@ -998,15 +1034,29 @@ public class VObjectService {
         if (currentData.getFilterFields() == null) {
             currentData.setFilterFields(v0.getFilterFields());
         }
-        String requete = "select alias_de_table.* from (" + v0.getMainQuery() + ") alias_de_table " + buildFilter(currentData.getFilterFields(), v0.getHeadersDLabel())
-                + buildOrderBy(v0.getHeaderSortDLabels(), v0.getHeaderSortDOrders());
+        PreparedStatementBuilder requete = new PreparedStatementBuilder();
+        requete
+        	.append("select alias_de_table.* from (" )
+        	.append(v0.getMainQuery())
+        	.append(") alias_de_table ")
+        	.append(buildFilter(currentData.getFilterFields(), v0.getHeadersDLabel()))
+        	.append(buildOrderBy(v0.getHeaderSortDLabels(), v0.getHeaderSortDOrders()))
+        	;
         ArrayList<String> fileNames = new ArrayList<>();
         fileNames.add("Vue");
         this.download(currentData, response, fileNames, requete);
     }
 
-    public void download(VObject currentData, HttpServletResponse response, List<String> fileNames, List<String> requetes) {
-        download(currentData, response, fileNames, requetes.toArray(new String[0]));
+    public void download(VObject currentData, HttpServletResponse response, List<String> fileNames, List<PreparedStatementBuilder> requetes) {
+    	
+    	
+    	PreparedStatementBuilder[] array=new PreparedStatementBuilder[requetes.size()];
+    	for (int i=0;i<requetes.size();i++)
+    	{
+    		array[i]=requetes.get(i);
+    	}
+    	
+        download(currentData, response, fileNames, array);
 
     }
 
@@ -1018,7 +1068,7 @@ public class VObjectService {
      * @param requetes
      *            , liste des requetes SQL
      */
-    public void download(VObject currentData, HttpServletResponse response, List<String> fileNames, String... requetes) {
+    public void download(VObject currentData, HttpServletResponse response, List<String> fileNames, PreparedStatementBuilder... requetes) {
     	VObject v0 = fetchVObjectData(currentData.getSessionName());
         if (currentData.getFilterFields() == null) {
             currentData.setFilterFields(v0.getFilterFields());
@@ -1105,7 +1155,7 @@ public class VObjectService {
      *
      * @param listIdSource
      */
-    public void downloadXML(VObject currentData, HttpServletResponse response, String requete, String repertoire, String anEnvExcecution, String phase, String etatOk, String etatKo) {
+    public void downloadXML(VObject currentData, HttpServletResponse response, PreparedStatementBuilder requete, String repertoire, String anEnvExcecution, String phase, String etatOk, String etatKo) {
     	VObject v0 = fetchVObjectData(currentData.getSessionName());
         if (currentData.getFilterFields() == null) {
             currentData.setFilterFields(v0.getFilterFields());
@@ -1114,7 +1164,7 @@ public class VObjectService {
         SimpleDateFormat ft = new SimpleDateFormat("yyyyMMddHHmmss");
         response.reset();
         response.setHeader("Content-Disposition", "attachment; filename=" + v0.getSessionName() + "_" + ft.format(dNow) + ".tar.gz");
-        // Rattachement du zip à la réponse de Struts2
+
         TarArchiveOutputStream taos = null;
         try {
             taos = new TarArchiveOutputStream(new GZIPOutputStream(response.getOutputStream()));
@@ -1161,7 +1211,7 @@ public class VObjectService {
      * @param listRepertoire
      *            noms du dernier dossier (chaque fichier pouvant être dans l'un de la liste)
      */
-    public void downloadEnveloppe(VObject currentData, HttpServletResponse response, String requete, String repertoire, ArrayList<String> listRepertoire) {
+    public void downloadEnveloppe(VObject currentData, HttpServletResponse response, PreparedStatementBuilder requete, String repertoire, ArrayList<String> listRepertoire) {
         VObject v0 = fetchVObjectData(currentData.getSessionName());
 
         if (currentData.getFilterFields() == null) {
@@ -1187,24 +1237,30 @@ public class VObjectService {
         }
     }
 
-    public ArrayList<String> upload(VObject data, String repertoireCible) {
-        if (data.getFileUpload() != null) {
-            for (int i = 0; i < data.getFileUpload().size(); i++) {
-                Path location = Paths.get(repertoireCible, data.getFileUpload().get(i).getOriginalFilename());
-                loggerDispatcher.info( "Upload >> " + location, LOGGER);
-                File newFile = location.toFile();
-                try {
-	                if (newFile.exists()) {
-	                	Files.delete(newFile.toPath());
-	                }
-	                data.getFileUpload().get(i).transferTo(newFile);
-                } catch (IOException ex) {
-                    LoggerHelper.errorGenTextAsComment(getClass(), "upload()", LOGGER, ex);
-                }
-            }
-        }
-        data.setMessage("Upload terminé.");
-        return new ArrayList<String>();
+    public void upload(VObject data, String repertoireCible) {
+    	int nbUploaded = 0;
+    	if (data.getFileUpload() != null) {
+    		for (MultipartFile uploadedFile : data.getFileUpload()) {
+    			String fileName = uploadedFile.getOriginalFilename();
+    			// The file can be effectively empty (no name and no content)
+				if (fileName != null && !fileName.isEmpty()) {
+    				Path location = Paths.get(repertoireCible, fileName);
+    				loggerDispatcher.info( "Upload >> " + location, LOGGER);
+    				File newFile = location.toFile();
+    				try {
+    					if (newFile.exists()) {
+    						Files.delete(newFile.toPath());
+    					}
+    					uploadedFile.transferTo(newFile);
+    				} catch (IOException ex) {
+    					LoggerHelper.errorGenTextAsComment(getClass(), "upload()", LOGGER, ex);
+    				}
+    			}
+				nbUploaded++;
+    		}
+    	}
+        data.setMessage("managementSandbox.load.success");
+        data.setMessageArgs(nbUploaded);
     }
 
     public ArrayList<String> getHeaderSortDLabels(VObject currentData) {
@@ -1279,7 +1335,9 @@ public class VObjectService {
     }
 
     public void initializeByList(VObject data, ArrayList<ArrayList<String>> liste, HashMap<String, String> defaultInputFields) {
-        StringBuilder requete = new StringBuilder();
+
+    	
+    	PreparedStatementBuilder requete = new PreparedStatementBuilder();
         ArrayList<String> header = liste.get(0);
         ArrayList<String> type = liste.get(1);
 
@@ -1294,7 +1352,7 @@ public class VObjectService {
                 if (j > 0) {
                     requete.append(",");
                 }
-                requete.append("'" + liste.get(i).get(j).replace("'", "''") + "'::" + type.get(j) + " as " + header.get(j));
+					requete.append("" + requete.quoteText(liste.get(i).get(j)) + "::" + type.get(j) + " as " + header.get(j));
             }
         }
 
@@ -1311,9 +1369,8 @@ public class VObjectService {
             requete.append("WHERE false ");
 
         }
-        loggerDispatcher.debug(" initializeByList requete : " + requete.toString(), LOGGER);
         // on ne gere pas les autres cas: ca doit planter
-        this.initialize(data, requete.toString(), data.getTable(), defaultInputFields);
+        this.initialize(data, requete, data.getTable(), defaultInputFields);
     }
 
     public void setFilterPattern(int filterPattern) {
