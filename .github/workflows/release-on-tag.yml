@@ -14,9 +14,9 @@ jobs:
       uses: actions/setup-java@v1
       with:
         java-version: 1.8
-    - name: Get version
-      run: echo ::set-env name=RELEASE_VERSION::$(echo ${GITHUB_REF#refs/*/})
     - name: Package with Maven
+      env:
+        RELEASE_VERSION: ${GITHUB_REF#refs/*/}
       run: mvn package -DarcVersion=$RELEASE_VERSION
     - uses: ncipollo/release-action@v1
       with:
