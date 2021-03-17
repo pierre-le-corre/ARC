@@ -18,6 +18,6 @@ jobs:
       run: mvn package
     - uses: ncipollo/release-action@v1
       with:
-        artifacts: "*/target/*.war","arc-batch/arc-batch.jar"
+        artifacts: "*/target/*.war,arc-batch/arc-batch.jar"
         body: "New automated release"
         token: ${{ secrets.GITHUB_TOKEN }}
