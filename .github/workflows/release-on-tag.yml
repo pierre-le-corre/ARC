@@ -2,8 +2,6 @@ name: release-on-tag
 
 on:
   push:
-   branches:
-     - master
    tags:
      - version-*
 
@@ -18,3 +16,8 @@ jobs:
         java-version: 1.8
     - name: Verify with Maven
       run: mvn verify
+    - uses: ncipollo/release-action@v1
+      with:
+        artifacts: "*/target/*.war"
+        body: "New automated release"
+        token: ${{ secrets.GITHUB_TOKEN }}
