@@ -14,10 +14,10 @@ jobs:
       uses: actions/setup-java@v1
       with:
         java-version: 1.8
-    - name: Verify with Maven
-      run: mvn verify
+    - name: Package with Maven
+      run: mvn package
     - uses: ncipollo/release-action@v1
       with:
-        artifacts: "*/target/*.war"
+        artifacts: "*/target/*.war","arc-batch/arc-batch.jar"
         body: "New automated release"
         token: ${{ secrets.GITHUB_TOKEN }}
